@@ -1,0 +1,149 @@
+@import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+
+/* ---------------------------------------------------------------------------
+   Design tokens.
+
+   Light is the base declaration; dark is redefined twice - once under the OS
+   media query (guarded so an explicit light choice still wins) and once under
+   the data-theme stamp, so the in-app toggle beats the OS in both directions.
+
+   Series hues are the validated categorical set, stepped separately for each
+   surface rather than reused across both: the same hex that clears contrast on
+   a dark ground does not on a light one.
+   --------------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+  --surface-0: #f4f4f1;
+  --surface-1: #fcfcfb;
+  --surface-2: #eeede9;
+  --border-1:  #e0dfd9;
+  --border-2:  #cbcac2;
+  --text-primary:   #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted:     #78776f;
+
+  --series-1: #2a78d6;  /* blue    */
+  --series-2: #eb6834;  /* orange  */
+  --series-3: #1baf7a;  /* aqua    */
+  --series-4: #eda100;  /* yellow  */
+  --series-5: #e87ba4;  /* magenta */
+  --series-6: #4a3aa7;  /* violet  */
+
+  --diverge-neg: #2a78d6;
+  --diverge-mid: #f0efec;
+  --diverge-pos: #e34948;
+
+  --good: #1baf7a;
+  --warn: #eda100;
+  --crit: #e34948;
+
+  --map-bg: #eceae5;
+  --node-ring: #ffffff;
+  --shadow: 0 1px 2px rgba(0,0,0,.05), 0 1px 8px rgba(0,0,0,.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-0: #121211;
+    --surface-1: #1a1a19;
+    --surface-2: #232322;
+    --border-1:  #2f2f2d;
+    --border-2:  #3d3d3a;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #8a8a80;
+
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #9085e9;
+
+    --diverge-neg: #3987e5;
+    --diverge-mid: #383835;
+    --diverge-pos: #e66767;
+
+    --good: #199e70;
+    --warn: #c98500;
+    --crit: #e66767;
+
+    --map-bg: #0e0e0d;
+    --node-ring: #0e0e0d;
+    --shadow: none;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #121211;
+  --surface-1: #1a1a19;
+  --surface-2: #232322;
+  --border-1:  #2f2f2d;
+  --border-2:  #3d3d3a;
+  --text-primary:   #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted:     #8a8a80;
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #9085e9;
+
+  --diverge-neg: #3987e5;
+  --diverge-mid: #383835;
+  --diverge-pos: #e66767;
+
+  --good: #199e70;
+  --warn: #c98500;
+  --crit: #e66767;
+
+  --map-bg: #0e0e0d;
+  --node-ring: #0e0e0d;
+  --shadow: none;
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font-family: ui-sans-serif, -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+  font-feature-settings: "tnum" 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* Leaflet paints its own chrome and needs the tokens applied explicitly */
+.leaflet-container { background: var(--map-bg); font-family: inherit; }
+.leaflet-control-attribution {
+  background: color-mix(in srgb, var(--surface-1) 85%, transparent) !important;
+  color: var(--text-muted) !important;
+  font-size: 10px !important;
+}
+.leaflet-control-attribution a { color: var(--text-secondary) !important; }
+.leaflet-bar a {
+  background: var(--surface-1) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-2) !important;
+}
+.leaflet-tooltip {
+  background: var(--surface-1) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-2) !important;
+  box-shadow: var(--shadow) !important;
+}
+.leaflet-tooltip::before { display: none !important; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--surface-0); }
+::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+input[type="range"] { accent-color: var(--series-1); }
+select { color-scheme: inherit; }

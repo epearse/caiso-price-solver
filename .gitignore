@@ -1,0 +1,10 @@
+.venv/
+data/derived/
+data/models/
+web/node_modules/
+web/dist/
+# the exported static bundle IS committed - it is what GitHub Pages serves
+!web/public/data/
+__pycache__/
+*.pyc
+.DS_Store
