@@ -124,8 +124,8 @@ export function ValidationPanel({ meta }: { meta: Meta | null }) {
                   contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border-2)',
                     borderRadius: 6, fontSize: 12 }}
                   labelStyle={{ color: 'var(--text-secondary)' }}
-                  formatter={(v: number, n: string) =>
-                    [usd(v), n === 'actual_mce' ? 'actual' : 'model']} />
+                  formatter={(v, n) =>
+                    [usd(Number(v)), n === 'actual_mce' ? 'actual' : 'model']} />
                 <Line type="monotone" dataKey="actual_mce" stroke="var(--series-1)"
                   strokeWidth={1.6} dot={false} isAnimationActive={false} />
                 <Line type="monotone" dataKey="pred_a" stroke="var(--series-3)"
@@ -147,7 +147,7 @@ export function ValidationPanel({ meta }: { meta: Meta | null }) {
                 <Tooltip
                   contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border-2)',
                     borderRadius: 6, fontSize: 12 }}
-                  formatter={(v: number) => usd(v)} />
+                  formatter={(v) => usd(Number(v))} />
                 <ReferenceLine segment={[{ x: lim[0], y: lim[0] }, { x: lim[1], y: lim[1] }]}
                   stroke="var(--text-muted)" strokeDasharray="4 4" ifOverflow="extendDomain" />
                 <Scatter data={sample} fill="var(--series-1)" fillOpacity={0.32} isAnimationActive={false} />

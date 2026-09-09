@@ -144,7 +144,7 @@ export function PriceSetterPanel() {
             <Tooltip contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border-2)',
               borderRadius: 6, fontSize: 12 }}
               labelFormatter={(v) => `hour ${v} UTC`}
-              formatter={(v: number, n: string) => [`${v.toFixed(1)} h`, n]} />
+              formatter={(v, n) => [`${Number(v).toFixed(1)} h`, String(n)]} />
             {classes.map((c) => (
               <Area key={c} type="monotone" dataKey={c} stackId="1"
                 stroke={CLASS_COLOR[c]} fill={CLASS_COLOR[c]} fillOpacity={0.75}

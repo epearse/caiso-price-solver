@@ -349,7 +349,7 @@ basis(n,h) = f( node history(n) , system state(h) , stack shape(h) , virtual dis
                   <YAxis type="number" {...axis} width={52} domain={calLim}
                     tickFormatter={(v) => `$${Math.round(v)}`} />
                   <Tooltip contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border-2)',
-                    borderRadius: 6, fontSize: 12 }} formatter={(v: number) => usd(v)} />
+                    borderRadius: 6, fontSize: 12 }} formatter={(v) => usd(Number(v))} />
                   <ReferenceLine segment={[{ x: calLim[0], y: calLim[0] }, { x: calLim[1], y: calLim[1] }]}
                     stroke="var(--text-muted)" strokeDasharray="4 4" />
                   <Line type="monotone" dataKey="mean_actual" stroke="var(--series-1)" strokeWidth={2}
@@ -503,7 +503,7 @@ basis(n,h) = f( node history(n) , system state(h) , stack shape(h) , virtual dis
                   <XAxis dataKey="name" {...axis} />
                   <YAxis {...axis} width={48} domain={['auto', 'auto']} />
                   <Tooltip contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border-2)',
-                    borderRadius: 6, fontSize: 12 }} formatter={(v: number) => v.toFixed(3)} />
+                    borderRadius: 6, fontSize: 12 }} formatter={(v) => Number(v).toFixed(3)} />
                   <Line type="monotone" dataKey="mean" stroke="var(--series-1)" strokeWidth={2}
                     dot={{ r: 3 }} isAnimationActive={false} />
                 </LineChart>

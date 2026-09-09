@@ -63,7 +63,7 @@ export function CounterfactualPanel() {
                 contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border-2)',
                   borderRadius: 6, fontSize: 12 }}
                 labelStyle={{ color: 'var(--text-secondary)' }}
-                formatter={(v: number) => [tip(v), 'mean impact']} />
+                formatter={(v) => [tip(Number(v)), 'mean impact']} />
               <ReferenceLine y={0} stroke="var(--border-2)" />
               <Bar dataKey="mean" radius={[3, 3, 0, 0]} isAnimationActive={false}>
                 {monthly.map((m) => (
@@ -89,7 +89,7 @@ export function CounterfactualPanel() {
                 contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border-2)',
                   borderRadius: 6, fontSize: 12 }}
                 labelFormatter={(v) => `${signedUsd(Number(v))}/MWh`}
-                formatter={(v: number) => [`${v} hours`, '']} />
+                formatter={(v) => [`${Number(v)} hours`, '']} />
               <ReferenceLine x={0} stroke="var(--text-muted)" strokeDasharray="3 3" />
               <Bar dataKey="n" radius={[2, 2, 0, 0]} isAnimationActive={false}>
                 {bins.map((b, i) => (
