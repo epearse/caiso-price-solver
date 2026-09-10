@@ -10,7 +10,7 @@ happened.
 It exists to answer two questions:
 
 1. **What do virtual bids do to prices?** Across 2025 they raised the day-ahead system
-   energy price by **+$1.45/MWh** on average (median +$0.43), moving it in 98.5% of hours.
+   energy price by **+$1.42/MWh** on average (median +$0.40), moving it in 98.5% of hours.
 2. **Which bidders move prices most?** Each anonymised bidder is removed and the market
    re-cleared, hour by hour, giving a signed price impact per bidder.
 
@@ -180,6 +180,44 @@ cd web && npm install && npm run dev                          # UI on :5180
 ```
 
 Raw inputs are read from `$CAISO_DATA` (default: `../caiso-bidding-app/caiso-data`).
+
+## Who sets the price, and who moves it
+
+These are different questions and the data separates them sharply. A bidder is **marginal**
+when their block sits exactly at the clearing price; **pivotal** when removing them moves it.
+
+By resource class, share-weighted over 8,734 hours:
+
+| Class | Share of price-setting hours | Avg price when setting |
+|---|---:|---:|
+| GENERATOR | 51.3% | $39.20 |
+| **VIRTUAL** | **46.8%** | $34.79 |
+| INTERTIE | 1.7% | $37.32 |
+| LOAD | 0.2% | $40.80 |
+
+**Convergence bids are the marginal unit in nearly half of all hours** — despite being tiny
+at the margin (2-15 MW, against 35-230 MW for generators). They are numerous and finely
+priced, so they land exactly on the intersection. The margin is uncontested ~88% of the
+time, and the demand side sets the price in ~10% of hours.
+
+But being marginal is not the same as mattering:
+
+| Bidder (SC) | Class | Hours marginal | Hours pivotal | Mean abs impact |
+|---|---|---:|---:|---:|
+| V186155 | virtual | 856 | 6,404 | $0.55 |
+| 187496 | generator | 699 | 8,575 | $1.23 |
+| 245368 | generator | 574 | 8,625 | $2.90 |
+| 139213 | generator | 531 | 8,703 | $3.90 |
+
+The top virtual sets the price more often than any physical bidder, yet removing it moves
+the price by $0.55 on average — it is individually replaceable. The generator sets the price
+less often but is worth seven times as much when withdrawn. **Price formation lives closer
+to *marginal*; market power lives closer to *pivotal*.**
+
+> Keying matters here. Virtual bids carry no resource id, so a resource-level ranking that
+> keys them by `PSEUDO_SC_ID` compares 164 virtual entities against 3,164 physical ones and
+> hands virtuals a spurious lead. The like-for-like analogue of "one unit's bid at one
+> location" is `(PSEUDO_SC_ID, PSEUDO_NODE_ID)`, which is what `owner_level='res'` uses.
 
 ## Data corrections applied
 
