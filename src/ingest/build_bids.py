@@ -8,13 +8,37 @@ Three corrections are applied to the raw CAISO PUBLICBIDS extract:
 2. **Explode.** A bid row may cover a multi-hour window (`SCH_BID_TIMEINTERVAL*`
    spans of 2-24h are common). Each is expanded to one row per clock hour so the
    stack can be assembled for any single hour.
-3. **Blocks.** The raw rows are *points* on a cumulative curve (x = cumulative MW,
-   y = $/MWh). Clearing needs *blocks*: the segment between consecutive points is
-   (x_i - x_{i-1}) MW offered at y_i.
+3. **Blocks.** The raw rows are *points* on a curve (x = MW, y = $/MWh), and the
+   price at a point applies **from that point up to the next one**. The last point
+   only marks the top of the range and repeats the previous price. So a curve of
+   n points is n-1 blocks: (x_{i+1} - x_i) MW offered at y_i.
 
-Side (supply vs demand) is inferred from the curve's own slope rather than from
-RESOURCE_TYPE, because interties carry both imports (upward-sloping supply) and
-exports (downward-sloping demand) under the same type label.
+   The first point is the *bottom* of the economic range, not a block starting at
+   zero. Whatever lies below it is either the resource's self-schedule, which is
+   already in the stack as a price taker, or a generator's minimum load, which is
+   not offered through the energy curve at all (see "Minimum load" below). An
+   earlier version of this step priced each block at its upper point and added a
+   block from 0 MW to the first point; that shifted every price by one segment and
+   counted self-scheduled MW twice.
+
+Side (supply vs demand) comes from RESOURCE_TYPE where that is unambiguous:
+generators are supply and load is demand, whatever the curve's slope (a flat load bid
+is still demand). Interties carry both imports and exports under one label, so for
+them it is inferred from slope: a falling curve is an export. A flat intertie curve
+is ambiguous and is treated as an import.
+
+**Minimum load.** A generator curve that starts above 0 MW with no self-schedule
+starts at the unit's minimum load. That capacity is produced only if the unit is
+committed, and is paid through a separate minimum-load cost rather than the energy
+bid, so it is left out of the stack. This understates must-run supply from committed
+units; the commitment decision is not observable in the public bid data.
+
+**Multi-stage generators.** About 50 resources submit one curve per operating
+configuration, and the public file gives no way to tell the configurations apart:
+their points arrive interleaved under one resource id, sometimes in overlapping time
+windows. These are read as a single curve in MW order, taking the lowest price where
+two points share a MW value. The MW range is right; the prices within it are
+approximate.
 
 Self-schedules carry no curve and live in the *other* timestamp pair
 (`TIMEINTERVALSTART_GMT`), so they need a second pass over the source; missing them
@@ -30,7 +54,9 @@ from db import connect
 from config import DAM_BIDS, DERIVED, BID_FLOOR, BID_CAP
 
 
-def build(con: duckdb.DuckDBPyConnection) -> None:
+def make_tables(con: duckdb.DuckDBPyConnection, source: str) -> None:
+    """Create `bid_blocks` and `self_sched` from `source`, a table or file reference
+    with the PUB_BID columns."""
     con.execute(f"""
     create or replace view raw_en as
     select distinct
@@ -42,7 +68,7 @@ def build(con: duckdb.DuckDBPyConnection) -> None:
         SCH_BID_XAXISDATA                     as x,
         SCH_BID_Y1AXISDATA                    as y,
         SELFSCHEDMW                           as ss_mw
-    from '{DAM_BIDS}'
+    from {source}
     where MARKETPRODUCTTYPE = 'EN'
       and SCH_BID_TIMEINTERVALSTART_GMT is not null
       and SCH_BID_TIMEINTERVALSTOP_GMT  is not null
@@ -58,12 +84,12 @@ def build(con: duckdb.DuckDBPyConnection) -> None:
     where r.x is not null and r.y is not null
     """)
 
-    # A resource can submit more than one curve for the same hour (overlapping
-    # submission windows). Collapse to one point per (res, hour, MW) by keeping the
-    # highest price at each MW, which is the conservative reading of the offer.
+    # More than one curve can cover the same resource-hour: multi-stage generators
+    # submit one per configuration, in windows that may overlap. Their points are
+    # merged into one curve, keeping the lowest price where two share a MW value.
     con.execute("""
     create or replace view pts as
-    select res, sc, res_type, ts_gmt, x, max(y) as y
+    select res, sc, res_type, ts_gmt, x, min(y) as y
     from pts_hourly
     group by 1,2,3,4,5
     """)
@@ -72,8 +98,7 @@ def build(con: duckdb.DuckDBPyConnection) -> None:
     create or replace view curve as
     select *,
            row_number() over w                       as step,
-           lag(x) over w                             as x_prev,
-           count(*)  over (partition by res, ts_gmt) as n_pts,
+           lead(x) over w                            as x_next,
            first_value(y) over w                     as y_first,
            last_value(y)  over (partition by res, ts_gmt order by x
                                 rows between unbounded preceding and unbounded following) as y_last
@@ -81,16 +106,19 @@ def build(con: duckdb.DuckDBPyConnection) -> None:
     window w as (partition by res, ts_gmt order by x)
     """)
 
-    # Downward-sloping curves are demand (load bids, intertie exports);
-    # flat or upward-sloping curves are supply (generation, imports).
+    # One block per segment, priced at its lower point. The top point has no
+    # x_next and so yields no block, and nothing is emitted below the first point.
     con.execute(f"""
     create or replace table bid_blocks as
     select res, sc, res_type, ts_gmt, step,
-           case when y_last < y_first - 0.001 then 'demand' else 'supply' end as side,
-           coalesce(x - x_prev, x) as mw,
-           y                       as price
+           case when res_type = 'LOAD'      then 'demand'
+                when res_type = 'GENERATOR' then 'supply'
+                when y_last < y_first - 0.001 then 'demand'
+                else 'supply' end as side,
+           x_next - x as mw,
+           y          as price
     from curve
-    where coalesce(x - x_prev, x) > 0.0001
+    where x_next - x > 0.0001
     """)
 
     # --- self-schedules: price-taker MW, modelled at the bid floor -------------
@@ -105,7 +133,7 @@ def build(con: duckdb.DuckDBPyConnection) -> None:
         strptime(TIMEINTERVALSTART_GMT, '%Y-%m-%dT%H:%M:%S%z')::timestamp as t0,
         strptime(TIMEINTERVALEND_GMT,   '%Y-%m-%dT%H:%M:%S%z')::timestamp as t1,
         SELFSCHEDMW               as ss_mw
-    from '{DAM_BIDS}'
+    from {source}
     where MARKETPRODUCTTYPE = 'EN'
       and SELFSCHEDMW is not null and SELFSCHEDMW > 0
       and TIMEINTERVALSTART_GMT is not null
@@ -128,6 +156,10 @@ def build(con: duckdb.DuckDBPyConnection) -> None:
     group by 1,2,3,4,5
     """)
 
+
+
+def build(con: duckdb.DuckDBPyConnection) -> None:
+    make_tables(con, f"'{DAM_BIDS}'")
     con.execute(f"""
     copy (
         select res, sc, res_type, ts_gmt, side, step, mw, price, false as is_self_sched

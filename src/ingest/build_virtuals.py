@@ -1,8 +1,10 @@
 """Convergence (virtual) bids -> hourly merit-order blocks.
 
-Same point-to-block conversion as the physical stack. Virtual bids are already
-one row per clock hour and carry no duplicates, so neither the explode nor the
-dedupe pass is needed here.
+Same point-to-block conversion as the physical stack: the price at a point applies
+up to the next point, and the last point only marks the top of the range. Every
+convergence curve starts at 0 MW, so the total MW is the last point's x. Virtual bids
+are already one row per clock hour and carry no duplicates, so neither the explode
+nor the dedupe pass is needed here.
 
 Locations stay opaque: `PSEUDO_NODE_ID` and `PSEUDO_SC_ID` are carried through as
 stable year-long pseudonyms and are never mapped to a real node or entity.
@@ -17,7 +19,9 @@ from db import connect
 from config import VIRTUAL_BIDS, DERIVED
 
 
-def build(con: duckdb.DuckDBPyConnection) -> None:
+def make_view(con: duckdb.DuckDBPyConnection, source: str) -> None:
+    """Create the `vblocks` view from `source`, a table or file reference with the
+    convergence-bid columns."""
     con.execute(f"""
     create or replace view vpts as
     select PSEUDO_NODE_ID              as pnode,
@@ -27,7 +31,7 @@ def build(con: duckdb.DuckDBPyConnection) -> None:
            BID_INT_START_TIME_GMT      as ts_gmt,
            SCHEDULED_BID_X             as x,
            SCHEDULED_BID_Y             as y
-    from '{VIRTUAL_BIDS}'
+    from {source}
     where SCHEDULED_BID_X is not null and SCHEDULED_BID_Y is not null
     """)
 
@@ -35,19 +39,26 @@ def build(con: duckdb.DuckDBPyConnection) -> None:
     create or replace view vcurve as
     select *,
            row_number() over w as step,
-           lag(x)       over w as x_prev
+           lead(x)      over w as x_next
     from vpts
     window w as (partition by pnode, psc, side, ts_gmt order by x)
     """)
 
+    con.execute("""
+    create or replace view vblocks as
+    select pnode, psc, node_type, side, ts_gmt, step,
+           x_next - x as mw,
+           y          as price
+    from vcurve
+    where x_next - x > 0.0001
+    """)
+
+
+def build(con: duckdb.DuckDBPyConnection) -> None:
+    make_view(con, f"'{VIRTUAL_BIDS}'")
     con.execute(f"""
-    copy (
-        select pnode, psc, node_type, side, ts_gmt, step,
-               coalesce(x - x_prev, x) as mw,
-               y                       as price
-        from vcurve
-        where coalesce(x - x_prev, x) > 0.0001
-    ) to '{DERIVED}/virtuals_hourly.parquet' (format parquet, compression zstd)
+    copy (select * from vblocks)
+    to '{DERIVED}/virtuals_hourly.parquet' (format parquet, compression zstd)
     """)
 
 
