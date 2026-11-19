@@ -23,7 +23,7 @@ attempts to reverse that.** `RESOURCEBID_SEQ`, `SCHEDULINGCOORDINATOR_SEQ`,
 `PSEUDO_NODE_ID` and `PSEUDO_SC_ID` are used purely as *stable pseudonyms* — group-by
 keys and learned model effects — and are never mapped to a named plant, a real network
 node, or a market participant. Node coordinates on the map come from CAISO's own
-published `LMPLocations` file keyed on **real** `NODE_ID`s taken from the LMP data,
+published price-map node list keyed on **real** `NODE_ID`s taken from the LMP data,
 which is a separate, public dataset and involves no de-anonymisation.
 
 Both ID spaces turn out to be stable across all of 2025 (pseudo-node Jan∩Jul =
@@ -155,6 +155,9 @@ To rebuild the bundle: `python src/export_static.py` (writes `web/public/data/`)
 python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 brew install libomp                     # LightGBM needs OpenMP on macOS
 
+# download the raw CAISO inputs into data/raw (see "Getting the data")
+./.venv/bin/python src/fetch/fetch_raw.py all
+
 # build derived tables (a few hours; reads ~4 GB of source parquet)
 ./.venv/bin/python src/ingest/build_bids.py
 ./.venv/bin/python src/ingest/build_virtuals.py
@@ -179,7 +182,56 @@ cd web && npm install && npm run dev                          # UI on :5180
 ./run.sh
 ```
 
-Raw inputs are read from `$CAISO_DATA` (default: `../caiso-bidding-app/caiso-data`).
+Raw inputs are read from `$CAISO_DATA` (default: `data/raw`).
+
+## Getting the data
+
+Nothing raw is committed: the inputs are public but run to several GB.
+`src/fetch/fetch_raw.py` downloads them from CAISO OASIS and writes the files the
+ingest step expects.
+
+```bash
+./.venv/bin/python src/fetch/fetch_raw.py all              # everything for 2025
+./.venv/bin/python src/fetch/fetch_raw.py bids virtuals    # or one target at a time
+```
+
+| Target | Source | Requests | Output in `data/raw/` | Expected for 2025 |
+|---|---|---:|---|---|
+| `bids` | OASIS `PUB_DAM_GRP` (public bids, masked ids) | 365 | `2025-DAM-BIDS.parquet` | 17,644,271 rows, 365 trade days |
+| `virtuals` | OASIS `PUB_CB_DAM_GRP` (convergence bids, masked ids) | 365 | `convergence_bids_2025.parquet` | 71,137,762 rows, 364 trade days (see below) |
+| `lmp` | OASIS `PRC_LMP`, DAM, all nodes | 365 | `2025-DAM-LMP-full.parquet` | ~590M rows, 8,760 hours, ~2.4 GB |
+| `slrs` | OASIS `ENE_SLRS`, DAM, all TAC zones | 12 | `caiso-ene-slrs-data/…/2025-MM/*.csv` | 166,536 rows, 8,760 hours |
+| `nodes` | Node list behind CAISO's public price map | 1 | `node_locations.csv` | ~14,900 nodes with coordinates |
+
+Things worth knowing before starting:
+
+- **OASIS allows one request every 5 seconds per IP** and rejects anything faster, so
+  requests are spaced 6 seconds apart. The two bid pulls take about 40 minutes each.
+  The LMP pull is 365 downloads of ~13 MB and takes a few hours. Run one pull at a
+  time; two at once share the same limit and both get rejected.
+- **Pulls are resumable.** Each trade day is saved as its own shard under
+  `data/raw/shards/` and never fetched twice, so an interrupted run picks up where it
+  stopped. `--no-download` rebuilds the parquet from shards already on disk, and
+  `--shards DIR` builds from `*.csv.gz` shards kept somewhere else.
+- **Bid data is published about 90 days after the trade day.** Asking for a more
+  recent day reports "no data" and the day is retried on the next run.
+- **Trade days are requested by local noon, not a fixed UTC hour.** A fixed stamp
+  names the previous trade day for half the year, which silently drops the
+  spring-forward day and fetches the fall-back day twice. Each compaction prints how
+  many trade days it found against how many it expected, and names any that are
+  missing.
+- **One convergence-bid day is missing at the source.** OASIS has no file for trade
+  day 2025-07-01 (it serves an empty placeholder generated before that day), so those
+  24 hours clear with physical bids only. The fetcher retries it on every run.
+- **Each output has a `.vintage.json` beside it** recording row counts and when the
+  shards were pulled. OASIS occasionally re-publishes bid data, so the pull date is
+  part of what makes a number reproducible.
+
+Node coordinates are keyed on the real `NODE_ID` that also appears in the LMP data.
+The price-map list covers the nodes CAISO draws rather than every priced node, so the
+rest stay unmapped. If `node_locations.csv` is absent the ingest falls back to a
+hand-supplied `LMPLocations_vs_FullList.xls`, which is what this project originally
+used.
 
 ## Who sets the price, and who moves it
 
@@ -257,6 +309,7 @@ unnormalised silently misaligns the tables by eight hours.
 src/
 ├── config.py            paths, price band, market constants
 ├── db.py                DuckDB connection (forces UTC)
+├── fetch/               OASIS downloads -> raw parquet
 ├── ingest/              raw parquet -> derived tables
 ├── engine/              merit-order clearing + derate calibration
 ├── models/              feature build, system models, nodal basis model
