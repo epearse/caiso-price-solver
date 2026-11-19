@@ -16,6 +16,15 @@ It exists to answer two questions:
 
 Both are answered by *re-clearing the market*, not by ablating a regression feature.
 
+> **The numbers on this page and on the live site predate a correction to how bid
+> curves are read** (see "Data corrections applied"). On the corrected stack the derate
+> is 0.56 ± 0.05 rather than 0.70 ± 0.08, and the with/without-virtuals difference
+> computed the same way is +$4.84/MWh rather than +$1.42. Neither figure is final.
+> Storage charging range is still counted as supply and self-scheduled exports are
+> still on the supply side (issues #3 and #4), and the derate's treatment of virtual
+> supply is under review (#5). Every table and the site will be regenerated once
+> those land.
+
 ## Anonymity
 
 CAISO publishes bids under rotating-looking sequence numbers. **This project never
@@ -273,6 +282,14 @@ to *marginal*; market power lives closer to *pivotal*.**
 
 ## Data corrections applied
 
+How a bid curve is read matters as much as any of the defects below. CAISO publishes
+each curve as points, and **the price at a point applies from that point up to the
+next one**; the last point only closes the range. The first point is the bottom of
+the economic range, not a block starting at zero: the MW below it is the resource's
+self-schedule (already in the stack as a price taker) or a generator's minimum load.
+Generators are always supply and load is always demand; only interties, which carry
+imports and exports under one label, have their side inferred from the curve's slope.
+
 Three defects in the raw extract that materially change the answer if left alone:
 
 - **~14% duplicate bid rows** from overlapping scraper date ranges. Left in, they
@@ -298,6 +315,13 @@ unnormalised silently misaligns the tables by eight hours.
   position).
 - **The "no virtuals" nodal case is an extrapolation.** The basis model has never seen an
   hour with zero virtual volume.
+- **Minimum load is left out.** A generator curve that starts above 0 MW with no
+  self-schedule starts at the unit's minimum load. That capacity runs only if the unit
+  is committed, which the public bid data does not show, so it is not in the stack.
+- **Multi-stage generators are approximate.** About 50 resources submit one curve per
+  operating configuration with nothing to tell the configurations apart. They are read
+  as a single curve in MW order: the MW range is right, the prices within it are not
+  exact.
 - **δ absorbs everything the engine omits.** It is a real, stable, measurable quantity,
   but it is a summary of several distinct physical effects, not one of them.
 - Load enters as the cleared day-ahead schedule rather than the forecast available before
