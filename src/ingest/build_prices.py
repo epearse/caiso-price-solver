@@ -22,7 +22,7 @@ import pandas as pd
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from db import connect
-from config import DAM_LMP, NODE_GEO_XLS, DERIVED
+from config import DAM_LMP, NODE_GEO_CSV, NODE_GEO_XLS, DERIVED
 
 
 def build_node_dim(con: duckdb.DuckDBPyConnection) -> None:
@@ -31,9 +31,12 @@ def build_node_dim(con: duckdb.DuckDBPyConnection) -> None:
     Coordinates come from CAISO's own published location list keyed on the *real*
     NODE_ID. Rows with degenerate lat/lon (~0,0 placeholders) are dropped.
     """
-    geo = pd.read_excel(NODE_GEO_XLS, sheet_name="LMPLocations_vs_FullList.csv")
-    geo = geo.rename(columns={"name": "node_id", "type": "node_kind",
-                              "latitude": "lat", "longitude": "lon"})
+    if NODE_GEO_CSV.exists():
+        geo = pd.read_csv(NODE_GEO_CSV)
+    else:
+        geo = pd.read_excel(NODE_GEO_XLS, sheet_name="LMPLocations_vs_FullList.csv")
+        geo = geo.rename(columns={"name": "node_id", "type": "node_kind",
+                                  "latitude": "lat", "longitude": "lon"})
     geo = geo[(geo.lat.abs() > 1) & (geo.lon.abs() > 1)].drop_duplicates("node_id")
     con.register("geo_df", geo[["node_id", "node_kind", "lat", "lon"]])
 

@@ -1,4 +1,5 @@
 .venv/
+data/raw/
 data/derived/
 data/models/
 web/node_modules/
