@@ -119,7 +119,11 @@ def cf_virtual():
     df = pd.read_parquet(p)
     df["ts"] = df.ts_gmt.astype(str)
     monthly = df.groupby("month").delta_price.agg(["mean", "std", "min", "max", "count"]).reset_index()
+    # The same effect under each derate treatment; `overall` is the default one.
+    sp = DERIVED / "cf_virtual_summary.parquet"
+    modes = pd.read_parquet(sp).reset_index().to_dict("records") if sp.exists() else []
     return _clean(dict(
+        modes=modes,
         overall=dict(mean=float(df.delta_price.mean()), median=float(df.delta_price.median()),
                      sd=float(df.delta_price.std()), mean_abs=float(df.delta_price.abs().mean()),
                      pct_hours_moved=float((df.delta_price.abs() > 0.01).mean()),

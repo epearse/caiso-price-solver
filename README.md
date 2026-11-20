@@ -9,22 +9,23 @@ happened.
 
 It exists to answer two questions:
 
-1. **What do virtual bids do to prices?** Across 2025 they raised the day-ahead system
-   energy price by **+$1.42/MWh** on average (median +$0.40), moving it in 98.5% of hours.
+1. **What do virtual bids do to prices?** Across 2025 they **lowered** the day-ahead
+   system energy price on average, by somewhere between **$0.28 and $3.87/MWh**
+   depending on one modelling assumption that the data cannot settle (see "What the
+   derate applies to"). An earlier version of this page reported +$1.42; that sign
+   came from errors in how the bids were read and from that same assumption.
 2. **Which bidders move prices most?** Each anonymised bidder is removed and the market
    re-cleared, hour by hour, giving a signed price impact per bidder.
 
 Both are answered by *re-clearing the market*, not by ablating a regression feature.
 
-> **The numbers on this page and on the live site predate four corrections to how
-> bids are read** (see "Data corrections applied"): segment pricing, storage charging
-> range counted as supply, self-schedule rows that should add up, and self-scheduled
-> exports counted as supply. On the corrected stack the derate is 0.80 ± 0.09 rather
-> than 0.70 ± 0.08, and the with/without-virtuals difference computed the same way is
-> −$0.28/MWh (median −$0.64) rather than +$1.42. That figure is not final: the
-> derate's treatment of virtual supply is under review (#5), and the sign of the
-> virtual-bid effect depends on it. Every table and the site will be regenerated
-> once that lands.
+> **Most numbers further down this page, and everything on the live site, predate
+> four corrections to how bids are read** (see "Data corrections applied") **and the
+> change in what the derate applies to.** The virtual-bid result above and the
+> sections "The availability derate" and "What the derate applies to" are current.
+> The accuracy tables, the bidder tables and the site are not: they will be
+> regenerated together once the validation method (#6) and the cost measure (#7)
+> are settled, since both change what is reported.
 
 ## Anonymity
 
@@ -71,13 +72,55 @@ held for ancillary services, or uncommitted. One scalar per hour carries all of 
 δ = demand(p*) / supply(p*)     evaluated at the realised price p*
 ```
 
-Measured over 2025 it is remarkably stable: **δ = 0.70 ± 0.08** (5–95%: 0.59–0.85). For
-prediction it is forecast from observables; for historical counterfactuals it is held at
-its implied value, so the unmodified case lands on CAISO's published price to
-within bid-price granularity — median 2&cent;, worst 25&cent; over 120 sampled hours — and
-every reported difference is attributable to the bids that were removed. It cannot agree
+Measured over 2025 it is stable: **δ = 0.77 ± 0.10** (5–95%: 0.62–0.94) under the
+default treatment below. For prediction it is forecast from observables; for historical
+counterfactuals it is held at its implied value, so the unmodified case lands on CAISO's
+published price to within bid-price granularity — median 2&cent;, worst 50&cent; over
+the year — and every reported difference is attributable to the bids that were removed. It cannot agree
 to the cent in general: the engine clears at a *submitted bid price*, while CAISO's energy
 price is an LP dual that coincides with one in only ~21% of hours.
+
+### What the derate applies to
+
+The formula above scales every supply block, virtual supply included, and leaves
+virtual demand whole. That is not neutral. A convergence bid is not a power plant:
+reserves, commitment and minimum-run times do not apply to it. Scaling virtual supply
+by 0.8 while counting virtual demand in full turns virtual bidders, who in 2025 were
+net sellers of 1,105 MW per hour at the realised price, into net buyers of 36 MW in
+the model. Removing a net buyer lowers the price, so that treatment pushes the
+measured effect of virtual bids upward.
+
+The engine therefore supports three treatments, and the virtual-bid result is reported
+under all of them:
+
+| Treatment | Derate applies to | Implied δ | Net virtual position in the model, MW | Effect of virtual bids on price, mean | Median | Hours lowered / raised |
+|---|---|---|---:|---:|---:|---:|
+| `physical_only` (default) | physical supply; virtual bids clear MW for MW | `(demand − virtual supply) / physical supply` = 0.77 ± 0.10 | +1,105 | **−$3.87** | −$3.34 | 80% / 19% |
+| `symmetric` | all supply and virtual demand alike | `physical demand / (supply − virtual demand)` = 0.78 ± 0.09 | +804 | **−$2.63** | −$2.43 | 80% / 19% |
+| `all_supply` (original) | all supply; virtual demand in full | `demand / supply` = 0.80 ± 0.09 | −36 | **−$0.28** | −$0.64 | 59% / 40% |
+
+Every term is MW at or beyond the realised price. Negative means virtual bids lowered
+the day-ahead system energy price. All 8,757 hours with a published price are included
+in every treatment, and in each the unmodified clear lands on the published price
+equally well (median 2&cent;).
+
+What this supports and what it does not:
+
+- **The direction is the same under all three**: virtual bids lowered the average
+  day-ahead system energy price in 2025. They are net sellers, and the two treatments
+  that keep them net sellers agree closely with each other (hourly correlation 0.96).
+- **The size is not pinned down.** It ranges from $0.28 to $3.87, and in May, June and
+  November the original treatment gives a small increase where the other two give a
+  decrease. The three agree on the direction in 78% of hours.
+- **None of the three is provably right.** Some virtual bids do fail to clear because
+  of congestion at their node, on both sides, and one scalar cannot represent that
+  without a network model.
+- **A lower day-ahead price is not a lower cost to load.** This is the simple average
+  of hourly system energy prices. What load pays depends on the MW bought in each hour,
+  on real-time prices, and on uplift; see issues #7 and #8.
+
+`tests/verify_modes.py` runs all three treatments on every exported hour in both the
+Python and the browser engine and checks that they agree.
 
 ## Results
 

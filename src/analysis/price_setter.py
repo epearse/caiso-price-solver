@@ -20,11 +20,12 @@ import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from config import DERIVED
 from db import connect
-from engine.clearing import clear
+from engine.clearing import clear, DERATE_MODES, DEFAULT_MODE
 from engine.loader import load_month
 
 
-def sweep(con, deltas: pd.Series, owner_level: str = "sc") -> pathlib.Path:
+def sweep(con, deltas: pd.Series, owner_level: str = "sc",
+          mode: str = DEFAULT_MODE) -> pathlib.Path:
     out_dir = DERIVED / f"price_setter_{owner_level}_parts"
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in out_dir.glob("*.parquet"):
@@ -38,7 +39,7 @@ def sweep(con, deltas: pd.Series, owner_level: str = "sc") -> pathlib.Path:
             d = deltas.get(ts)
             if d is None or not np.isfinite(d):
                 continue
-            r = clear(st, delta=float(d))
+            r = clear(st, delta=float(d), mode=mode)
             if not r.marginal:
                 continue
             tot = sum(m["mw"] for m in r.marginal) or 1.0
@@ -62,11 +63,13 @@ if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--level", choices=["sc", "res"], default="sc")
+    ap.add_argument("--mode", choices=DERATE_MODES, default=DEFAULT_MODE)
     args = ap.parse_args()
 
     con = connect(threads=4, memory="6GB")
-    deltas = pd.read_parquet(DERIVED / "features_hourly.parquet").set_index("ts_gmt")["delta"].dropna()
-    parts = sweep(con, deltas, args.level)
+    deltas = (pd.read_parquet(DERIVED / "features_hourly.parquet")
+              .set_index("ts_gmt")[f"delta_{args.mode}"].dropna())
+    parts = sweep(con, deltas, args.level, args.mode)
     src = f"'{parts}/*.parquet'"
 
     # Per-bidder: how often marginal, at what prices, in what capacity.
