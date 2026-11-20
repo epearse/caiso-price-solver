@@ -97,3 +97,31 @@ def test_virtual_curve_uses_the_same_convention():
     build_virtuals.make_view(con, "v")
     got = con.execute("select side, mw, price from vblocks order by price desc").fetchall()
     assert got == [("demand", 1, -1.36), ("demand", 1, -5.61), ("demand", 1, -23.88)]
+
+
+def test_storage_curve_is_split_at_zero():
+    # Charging 100 MW up to a price of 15, discharging 100 MW from 60.
+    con = physical([(20, "GENERATOR", -100, 15, None), (20, "GENERATOR", 0, 60, None),
+                    (20, "GENERATOR", 100, 60, None)])
+    assert blocks(con, 20) == [("demand", 100, 15), ("supply", 100, 60)]
+
+
+def test_segment_straddling_zero_gives_both_sides_at_one_price():
+    con = physical([(21, "GENERATOR", -100, 30, None), (21, "GENERATOR", 100, 30, None)])
+    assert sorted(blocks(con, 21)) == [("demand", 100, 30), ("supply", 100, 30)]
+
+
+def test_storage_charging_steps_keep_their_own_prices():
+    con = physical([(22, "GENERATOR", -80, 5, None), (22, "GENERATOR", -30, 12, None),
+                    (22, "GENERATOR", 40, 70, None), (22, "GENERATOR", 90, 70, None)])
+    assert blocks(con, 22) == [("demand", 50, 5), ("demand", 30, 12),
+                               ("supply", 40, 12), ("supply", 50, 70)]
+
+
+def test_negative_self_schedule_is_must_take_demand():
+    # Committed to charge 50 MW, with a further 50 MW of charging offered up to 10.
+    con = physical([(23, "GENERATOR", None, None, -50),
+                    (23, "GENERATOR", -100, 10, None), (23, "GENERATOR", -50, 10, None)])
+    assert blocks(con, 23) == [("demand", 50, 10)]
+    ss = con.execute("select side, mw, price from self_sched where res = 23").fetchall()
+    assert ss == [("demand", 50, build_bids.BID_CAP)]

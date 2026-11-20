@@ -16,14 +16,14 @@ It exists to answer two questions:
 
 Both are answered by *re-clearing the market*, not by ablating a regression feature.
 
-> **The numbers on this page and on the live site predate a correction to how bid
-> curves are read** (see "Data corrections applied"). On the corrected stack the derate
-> is 0.56 ± 0.05 rather than 0.70 ± 0.08, and the with/without-virtuals difference
-> computed the same way is +$4.84/MWh rather than +$1.42. Neither figure is final.
-> Storage charging range is still counted as supply and self-scheduled exports are
-> still on the supply side (issues #3 and #4), and the derate's treatment of virtual
-> supply is under review (#5). Every table and the site will be regenerated once
-> those land.
+> **The numbers on this page and on the live site predate two corrections to how bid
+> curves are read** (see "Data corrections applied"): segment pricing, and storage
+> charging range counted as supply. On the corrected stack the derate is 0.72 ± 0.08
+> rather than 0.70 ± 0.08, and the with/without-virtuals difference computed the same
+> way is +$0.99/MWh rather than +$1.42. Neither figure is final. Self-scheduled
+> exports are still on the supply side (issue #4), and the derate's treatment of
+> virtual supply is under review (#5); the sign of the virtual-bid effect depends on
+> that treatment. Every table and the site will be regenerated once those land.
 
 ## Anonymity
 
@@ -290,6 +290,12 @@ self-schedule (already in the stack as a price taker) or a generator's minimum l
 Generators are always supply and load is always demand; only interties, which carry
 imports and exports under one label, have their side inferred from the curve's slope.
 
+A storage resource bids one curve from full charging (negative MW) to full
+discharging. It is split at 0 MW: the part above zero is supply, and the part below
+zero is charging the resource will buy while the price is at or below the bid, so it
+enters as demand at that price. Counted as supply, the charging range added about
+11,000 MW per hour to the supply side with nothing on the demand side to offset it.
+
 Three defects in the raw extract that materially change the answer if left alone:
 
 - **~14% duplicate bid rows** from overlapping scraper date ranges. Left in, they
@@ -322,6 +328,11 @@ unnormalised silently misaligns the tables by eight hours.
   operating configuration with nothing to tell the configurations apart. They are read
   as a single curve in MW order: the MW range is right, the prices within it are not
   exact.
+- **Storage state of charge is ignored.** A storage resource's full charging and
+  discharging range is treated as available in every hour. The published limits
+  (`MINEOHSTATEOFCHARGE`, `MAXEOHSTATEOFCHARGE`) are not used, and a battery cannot
+  deliver its full range hour after hour. Charging also clears against the system
+  price here, where a real battery pays its own nodal price.
 - **δ absorbs everything the engine omits.** It is a real, stable, measurable quantity,
   but it is a summary of several distinct physical effects, not one of them.
 - Load enters as the cleared day-ahead schedule rather than the forecast available before

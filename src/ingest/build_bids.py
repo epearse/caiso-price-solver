@@ -27,6 +27,17 @@ is still demand). Interties carry both imports and exports under one label, so f
 them it is inferred from slope: a falling curve is an export. A flat intertie curve
 is ambiguous and is treated as an import.
 
+**Storage.** A storage resource bids one curve across its whole range, from full
+charging (negative MW) to full discharging (positive MW). Each segment is split at
+0 MW. The part above zero is supply at the bid price. The part below zero is
+charging the resource will buy while the price is at or below the bid, so it enters
+the stack as demand at that price (still labelled GENERATOR in `res_type`, which
+records the published resource type). Counting the whole span as supply, as an
+earlier version did, added the charging range to supply with nothing on the demand
+side to offset it. A negative self-schedule is committed charging and is must-take
+demand. State-of-charge limits are ignored: the full range is treated as available
+in every hour, which a battery cannot actually deliver.
+
 **Minimum load.** A generator curve that starts above 0 MW with no self-schedule
 starts at the unit's minimum load. That capacity is produced only if the unit is
 committed, and is paid through a separate minimum-load cost rather than the energy
@@ -108,17 +119,28 @@ def make_tables(con: duckdb.DuckDBPyConnection, source: str) -> None:
 
     # One block per segment, priced at its lower point. The top point has no
     # x_next and so yields no block, and nothing is emitted below the first point.
+    #
+    # A segment is split at 0 MW. The part above zero is output offered at the bid
+    # price. The part below zero is a storage resource's charging range: MW it will
+    # buy while the price is at or below the bid, so it is demand at that price.
     con.execute(f"""
     create or replace table bid_blocks as
-    select res, sc, res_type, ts_gmt, step,
-           case when res_type = 'LOAD'      then 'demand'
-                when res_type = 'GENERATOR' then 'supply'
-                when y_last < y_first - 0.001 then 'demand'
-                else 'supply' end as side,
-           x_next - x as mw,
-           y          as price
-    from curve
-    where x_next - x > 0.0001
+    with seg as (
+        select res, sc, res_type, ts_gmt, step, y as price,
+               case when res_type = 'LOAD'      then 'demand'
+                    when res_type = 'GENERATOR' then 'supply'
+                    when y_last < y_first - 0.001 then 'demand'
+                    else 'supply' end                 as side,
+               greatest(x_next, 0) - greatest(x, 0)   as mw_out,
+               least(x_next, 0)    - least(x, 0)      as mw_charge
+        from curve
+        where x_next is not null
+    )
+    select res, sc, res_type, ts_gmt, step, side, mw_out as mw, price
+    from seg where mw_out > 0.0001
+    union all
+    select res, sc, res_type, ts_gmt, step, 'demand' as side, mw_charge as mw, price
+    from seg where mw_charge > 0.0001
     """)
 
     # --- self-schedules: price-taker MW, modelled at the bid floor -------------
@@ -135,22 +157,24 @@ def make_tables(con: duckdb.DuckDBPyConnection, source: str) -> None:
         SELFSCHEDMW               as ss_mw
     from {source}
     where MARKETPRODUCTTYPE = 'EN'
-      and SELFSCHEDMW is not null and SELFSCHEDMW > 0
+      and SELFSCHEDMW is not null and SELFSCHEDMW <> 0
       and TIMEINTERVALSTART_GMT is not null
       and TIMEINTERVALEND_GMT   is not null
     """)
 
+    # A negative self-schedule is storage committing to charge whatever the price:
+    # must-take demand, like self-scheduled load.
     con.execute(f"""
     create or replace table self_sched as
-    select r.res, r.sc, r.res_type, h.ts_gmt,
-           case when r.res_type = 'LOAD' then 'demand' else 'supply' end as side,
-           max(r.ss_mw) as mw,
+    select r.res, r.sc, r.res_type, h.ts_gmt, r.side,
+           max(abs(r.ss_mw)) as mw,
            -- Price takers sit at the extremes of the bid band so they clear ahead
            -- of every economic bid: must-run supply at the floor, must-take load
            -- at the cap. Putting load at the floor would rank it last and starve
            -- the demand side of the stack.
-           case when r.res_type = 'LOAD' then {BID_CAP} else {BID_FLOOR} end as price
-    from raw_ss r,
+           case when r.side = 'demand' then {BID_CAP} else {BID_FLOOR} end as price
+    from (select *, case when res_type = 'LOAD' or ss_mw < 0 then 'demand'
+                         else 'supply' end as side from raw_ss) r,
          lateral (select unnest(generate_series(r.t0, r.t1 - interval 1 hour,
                                                 interval 1 hour)) as ts_gmt) h
     group by 1,2,3,4,5
