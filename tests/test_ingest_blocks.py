@@ -13,10 +13,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 from ingest import build_bids, build_virtuals
 
 T0, T1 = "2025-07-10T18:00:00-00:00", "2025-07-10T19:00:00-00:00"
+T2 = "2025-07-10T20:00:00-00:00"
+HOURS = [(T0, T1), (T1, T2)]
 
 
-def physical(rows):
-    """rows: (res, res_type, x, y, self_sched_mw). Curve points leave self_sched_mw
+def physical(rows, direction=None):
+    """rows: (res, res_type, x, y, self_sched_mw[, hour]). Curve points leave self_sched_mw
     None; a self-schedule row leaves x and y None, as in the published file."""
     con = duckdb.connect()
     con.execute("set TimeZone='UTC'")
@@ -26,12 +28,16 @@ def physical(rows):
         TIMEINTERVALSTART_GMT varchar, TIMEINTERVALEND_GMT varchar,
         SCH_BID_TIMEINTERVALSTART_GMT varchar, SCH_BID_TIMEINTERVALSTOP_GMT varchar,
         SCH_BID_XAXISDATA double, SCH_BID_Y1AXISDATA double)""")
-    for res, typ, x, y, ss in rows:
+    for res, typ, x, y, ss, *hour in rows:
         curve = x is not None
+        t0, t1 = HOURS[hour[0] if hour else 0]
         con.execute("insert into raw values (?, 1, ?, 'EN', ?, ?, ?, ?, ?, ?, ?)",
-                    [res, typ, ss, None if curve else T0, None if curve else T1,
-                     T0 if curve else None, T1 if curve else None, x, y])
-    build_bids.make_tables(con, "raw")
+                    [res, typ, ss, None if curve else t0, None if curve else t1,
+                     t0 if curve else None, t1 if curve else None, x, y])
+    if direction:
+        con.execute("create table extra (res bigint, direction varchar, basis varchar)")
+        con.executemany("insert into extra values (?, ?, 'test')", list(direction.items()))
+    build_bids.make_tables(con, "raw", "extra" if direction else None)
     return con
 
 
@@ -125,3 +131,60 @@ def test_negative_self_schedule_is_must_take_demand():
     assert blocks(con, 23) == [("demand", 50, 10)]
     ss = con.execute("select side, mw, price from self_sched where res = 23").fetchall()
     assert ss == [("demand", 50, build_bids.BID_CAP)]
+
+
+def test_self_schedule_rows_for_one_hour_add_up():
+    # Two self-schedule types, 40 and 25 MW; the curve starts at their sum.
+    con = physical([(30, "GENERATOR", None, None, 40), (30, "GENERATOR", None, None, 25),
+                    (30, "GENERATOR", 65, 30, None), (30, "GENERATOR", 100, 30, None)])
+    assert con.execute("select side, mw from self_sched where res = 30").fetchall() == [("supply", 65)]
+    assert blocks(con, 30) == [("supply", 35, 30)]
+
+
+def test_repeated_identical_self_schedule_row_counts_once():
+    con = physical([(31, "LOAD", None, None, 40), (31, "LOAD", None, None, 40)])
+    assert con.execute("select side, mw from self_sched where res = 31").fetchall() == [("demand", 40)]
+
+
+def test_exporter_self_schedule_is_must_take_demand():
+    # Hour 0: a falling curve marks the resource as an export. Hour 1: it only
+    # self-schedules, and that must follow the resource's direction.
+    con = physical([(32, "INTERTIE", 0, 80, None), (32, "INTERTIE", 50, 40, None),
+                    (32, "INTERTIE", 100, 40, None),
+                    (32, "INTERTIE", None, None, 70, 1)])
+    ss = con.execute("select side, mw, price from self_sched where res = 32").fetchall()
+    assert ss == [("demand", 70, build_bids.BID_CAP)]
+
+
+def test_flat_intertie_curve_takes_its_resources_direction():
+    con = physical([(33, "INTERTIE", 0, 80, None), (33, "INTERTIE", 50, 40, None),
+                    (33, "INTERTIE", 100, 40, None),
+                    (33, "INTERTIE", 0, 55, None, 1), (33, "INTERTIE", 30, 55, None, 1)])
+    flat = con.execute("select side, mw, price from bid_blocks where res = 33 and price = 55").fetchall()
+    assert flat == [("demand", 30, 55)]
+
+
+def test_direction_table_labels_resources_with_no_sloped_curve():
+    rows = [(34, "INTERTIE", None, None, 20), (35, "INTERTIE", None, None, 20),
+            (36, "INTERTIE", 0, 10, None), (36, "INTERTIE", 15, 10, None)]
+    con = physical(rows, direction={34: "export", 36: "export"})
+    ss = dict(con.execute("select res, side from self_sched").fetchall())
+    assert ss == {34: "demand", 35: "supply"}      # 35 has no evidence: import
+    assert blocks(con, 36) == [("demand", 15, 10)]
+
+
+def test_a_sloped_curve_outranks_the_direction_table():
+    con = physical([(37, "INTERTIE", 0, 20, None), (37, "INTERTIE", 50, 30, None),
+                    (37, "INTERTIE", 80, 30, None), (37, "INTERTIE", None, None, 10)],
+                   direction={37: "export"})
+    assert con.execute("select side from self_sched where res = 37").fetchall() == [("supply",)]
+
+
+def test_wheel_pairs_are_split_one_each_way():
+    import pandas as pd
+    from ingest.intertie_direction import wheel_pairs
+    hours = pd.date_range("2025-01-01", periods=48, freq="h")
+    def prof(res, mw):
+        return pd.DataFrame({"res": res, "ts_gmt": hours, "mw": mw})
+    ss = pd.concat([prof(1, 100.0), prof(2, 100.0), prof(3, 55.0)])
+    assert wheel_pairs(ss) == {1: "import", 2: "export"}
