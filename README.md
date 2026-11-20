@@ -16,14 +16,15 @@ It exists to answer two questions:
 
 Both are answered by *re-clearing the market*, not by ablating a regression feature.
 
-> **The numbers on this page and on the live site predate two corrections to how bid
-> curves are read** (see "Data corrections applied"): segment pricing, and storage
-> charging range counted as supply. On the corrected stack the derate is 0.72 ± 0.08
-> rather than 0.70 ± 0.08, and the with/without-virtuals difference computed the same
-> way is +$0.99/MWh rather than +$1.42. Neither figure is final. Self-scheduled
-> exports are still on the supply side (issue #4), and the derate's treatment of
-> virtual supply is under review (#5); the sign of the virtual-bid effect depends on
-> that treatment. Every table and the site will be regenerated once those land.
+> **The numbers on this page and on the live site predate four corrections to how
+> bids are read** (see "Data corrections applied"): segment pricing, storage charging
+> range counted as supply, self-schedule rows that should add up, and self-scheduled
+> exports counted as supply. On the corrected stack the derate is 0.80 ± 0.09 rather
+> than 0.70 ± 0.08, and the with/without-virtuals difference computed the same way is
+> −$0.28/MWh (median −$0.64) rather than +$1.42. That figure is not final: the
+> derate's treatment of virtual supply is under review (#5), and the sign of the
+> virtual-bid effect depends on it. Every table and the site will be regenerated
+> once that lands.
 
 ## Anonymity
 
@@ -168,10 +169,10 @@ brew install libomp                     # LightGBM needs OpenMP on macOS
 ./.venv/bin/python src/fetch/fetch_raw.py all
 
 # build derived tables (a few hours; reads ~4 GB of source parquet)
-./.venv/bin/python src/ingest/build_bids.py
-./.venv/bin/python src/ingest/build_virtuals.py
 ./.venv/bin/python src/ingest/build_system.py
 ./.venv/bin/python src/ingest/build_prices.py
+./.venv/bin/python src/ingest/build_bids.py      # after the two above: uses published exports
+./.venv/bin/python src/ingest/build_virtuals.py
 
 # train
 ./.venv/bin/python src/models/build_features.py
@@ -296,6 +297,36 @@ zero is charging the resource will buy while the price is at or below the bid, s
 enters as demand at that price. Counted as supply, the charging range added about
 11,000 MW per hour to the supply side with nothing on the demand side to offset it.
 
+Self-schedule rows for one resource and hour add up: there is one per self-schedule
+type, and where a curve follows, its first point sits at their sum. Taking the
+largest, as an earlier version did, lost about 310 MW per hour.
+
+**Imports and exports.** The public file labels both INTERTIE and gives no direction.
+A sloped curve reveals it, and no resource in 2025 is ever both. But 95% of
+self-scheduled intertie MW comes from resources that never submit a sloped curve, and
+an earlier version put all of it on the supply side, so every self-scheduled export
+was counted as an import. Direction for those resources is now recovered in two
+steps (`src/ingest/intertie_direction.py`):
+
+- *Wheel pairs.* Two resources whose self-schedules are identical hour for hour are
+  taken to be the import and export legs of a wheel-through: 30 pairs, about 760 MW
+  per hour each way. Which leg is which cannot be told, and for the system stack it
+  does not matter.
+- *Fit to published exports.* What is left of CAISO's published hourly exports after
+  the identified ones are removed is regressed on each remaining resource's hourly
+  MW, with coefficients bounded to [0, 1]. Resources above 0.5 are labelled exports:
+  273 resources, about 750 MW per hour. The fit has R² 0.96 and an intercept of
+  27 MW. Run on resources whose direction is known from their curves, it calls 99%
+  of exporter MW an export and 8.5% of importer MW an export, and the labels agree
+  on 96% of MW between two halves of the year.
+
+These labels are statistical, not observed; about 300 MW per hour sits on
+coefficients between 0.2 and 0.8. With them, modelled exports average 1,973 MW per
+hour against 2,082 published (hourly correlation 0.99), and must-take demand
+averages 24,757 MW against 25,182 MW of published load plus exports. About
+1,550 MW per hour of intertie self-schedules has no evidence of being an export and
+is treated as an import.
+
 Three defects in the raw extract that materially change the answer if left alone:
 
 - **~14% duplicate bid rows** from overlapping scraper date ranges. Left in, they
@@ -333,6 +364,11 @@ unnormalised silently misaligns the tables by eight hours.
   (`MINEOHSTATEOFCHARGE`, `MAXEOHSTATEOFCHARGE`) are not used, and a battery cannot
   deliver its full range hour after hour. Charging also clears against the system
   price here, where a real battery pays its own nodal price.
+- **Intertie direction is partly inferred.** See "Imports and exports" above. The
+  inference uses published day-ahead exports, which are a market outcome, so the bid
+  stack is no longer built from bids alone. Modelled imports (4,545 MW per hour) fall
+  well short of published imports (6,326 MW): some imports are evidently not bid as
+  INTERTIE resources, and the fit cannot be repeated on the import side.
 - **δ absorbs everything the engine omits.** It is a real, stable, measurable quantity,
   but it is a summary of several distinct physical effects, not one of them.
 - Load enters as the cleared day-ahead schedule rather than the forecast available before
