@@ -136,7 +136,8 @@ if __name__ == "__main__":
     print(f"  train {len(tr):,} node-hours | test {len(te):,}", flush=True)
 
     DROP = {"ts_gmt", "lmp", "mcc", "mcl", "mce", "basis", "actual_mce", "delta", "opr_dt"}
-    cols = [c for c in tr.columns if c not in DROP]
+    DROP_PREFIXES = ("delta_", "atp_")   # computed from the realised price
+    cols = [c for c in tr.columns if c not in DROP and not c.startswith(DROP_PREFIXES)]
 
     params = dict(objective="regression", metric="l2", learning_rate=0.06,
                   num_leaves=255, min_data_in_leaf=200, feature_fraction=0.8,

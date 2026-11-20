@@ -19,7 +19,7 @@ import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from config import DERIVED, MODELS
 from db import connect
-from engine.clearing import clear, Stack
+from engine.clearing import clear, Stack, DEFAULT_MODE
 from engine.loader import load_hour
 from api.featuredocs import FAMILIES, describe
 
@@ -192,6 +192,7 @@ def run_hour(ts_iso: str, sc: Scenario) -> dict:
     return dict(
         ts=ts_iso,
         delta=delta,
+        derate_mode=DEFAULT_MODE,
         actual_mce=float(row["actual_mce"]) if np.isfinite(row.get("actual_mce", np.nan)) else None,
         base=dict(price=base.price, quantity=base.quantity, binding=base.binding),
         scenario=dict(price=scen.price, quantity=scen.quantity, binding=scen.binding),

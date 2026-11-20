@@ -5,6 +5,9 @@ At the realised clearing price p*, market balance requires
     delta * supply(p*) = demand(p*)      =>      delta = demand(p*) / supply(p*)
 
 so every historical hour yields one observation of `delta` directly, with no search.
+That is the `all_supply` treatment. The other two (see `clearing.py`) scale a
+different set of blocks and have their own closed form, in `implied_delta`; this
+script reports all three.
 This is the bridge between a merit-order stack that offers far more capacity than the
 network can deliver and the price CAISO actually published.
 
@@ -21,7 +24,7 @@ import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from config import DERIVED
 from db import connect
-from engine.clearing import clear
+from engine.clearing import clear, implied_delta, DERATE_MODES, DEFAULT_MODE
 from engine.loader import load_hour
 
 
@@ -50,7 +53,8 @@ def fit_hours(con, timestamps) -> pd.DataFrame:
         rows.append(dict(
             ts_gmt=ts, actual_mce=actual, raw_lambda=raw.price,
             supply_at_actual=s_at, demand_at_actual=d_at,
-            delta=d_at / s_at if s_at > 0 else np.nan,
+            delta=implied_delta(stack, actual, DEFAULT_MODE),
+            **{f"delta_{m}": implied_delta(stack, actual, m) for m in DERATE_MODES},
             offered_supply=float(stack.supply_mw.sum()),
             offered_demand=float(stack.demand_mw.sum()),
             virtual_supply=float(stack.supply_mw[stack.supply_virtual].sum()),
@@ -73,8 +77,11 @@ if __name__ == "__main__":
 
     d = df.delta.replace([np.inf, -np.inf], np.nan).dropna()
     print(f"hours fitted: {len(df)}")
-    print(f"\nsupply-availability derate delta:")
+    print(f"\nsupply-availability derate delta ({DEFAULT_MODE}):")
     print(d.describe(percentiles=[.05, .25, .5, .75, .95]).round(3).to_string())
+    for m in DERATE_MODES:
+        dm = df[f"delta_{m}"]
+        print(f"  {m:14s} mean {dm.mean():.3f}  sd {dm.std():.3f}  undefined {int(dm.isna().sum())}")
     print(f"\nraw engine lambda vs actual MCE:")
     err = df.raw_lambda - df.actual_mce
     print(f"  mean error {err.mean():8.2f}   median {err.median():8.2f}   "

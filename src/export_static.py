@@ -27,6 +27,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from config import DERIVED, MODELS, ROOT
 from db import connect
 from engine.loader import load_month
+from engine.clearing import DERATE_MODES, DEFAULT_MODE
 from api import service
 
 OUT = ROOT / "web" / "public" / "data"
@@ -99,7 +100,9 @@ def main() -> None:
             if st is None:
                 continue
             row = feats[feats.ts_gmt == ts].iloc[0]
-            delta = float(row["delta"]) if np.isfinite(row.get("delta", np.nan)) else 0.7
+            if not np.isfinite(row.get("delta", np.nan)):
+                continue    # no implied derate, so no baseline to show for this hour
+            delta = float(row["delta"])
 
             owners = sorted({str(o) for o in
                              np.concatenate([st.supply_owner, st.demand_owner])})
@@ -119,7 +122,9 @@ def main() -> None:
 
             payload = dict(
                 # full precision: rounding the derate flips razor-thin ties
-                ts=str(ts), delta=delta,
+                ts=str(ts), delta=delta, derate_mode=DEFAULT_MODE,
+                deltas={m: (float(row[f"delta_{m}"]) if np.isfinite(row[f"delta_{m}"]) else None)
+                        for m in DERATE_MODES},
                 actual_mce=None if not np.isfinite(row.get("actual_mce", np.nan))
                            else round(float(row["actual_mce"]), 3),
                 iso_load=round(float(row.get("iso_load", np.nan)), 1),

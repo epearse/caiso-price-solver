@@ -8,12 +8,16 @@
 import type { ClearResult, HourRow, Meta, ModelSpec, OwnerRow, PriceSetter,
               Scenario as ApiScenario, CFVirtual, InfluenceRow, NodeRow } from './api';
 import { applyScenario, clear, curvePoints, emptyScenario } from './engine';
-import type { Stack } from './engine';
+import type { DerateMode, Stack } from './engine';
 
 const BASE = `${import.meta.env.BASE_URL}data`;
 
 interface HourFile {
   ts: string; delta: number; actual_mce: number | null;
+  // Which treatment `delta` was fitted under. Bundles exported before the modes
+  // existed carry no field and used all_supply.
+  derate_mode?: DerateMode;
+  deltas?: Partial<Record<DerateMode, number | null>>;
   iso_load: number; iso_imp: number; iso_exp: number;
   owners: string[]; owner_type: string[]; owner_virtual: boolean[];
   supply: { p: number[]; m: number[]; o: number[] };
@@ -89,9 +93,10 @@ export const staticSource = {
       supplyMwScale: sc.supply_mw_scale, demandMwScale: sc.demand_mw_scale,
     };
     const delta = sc.delta_override ?? h.delta;
-    const base = clear(stack, delta);
+    const mode: DerateMode = h.derate_mode ?? 'all_supply';
+    const base = clear(stack, delta, mode);
     const scenStack = applyScenario(stack, scen);
-    const scenRes = clear(scenStack, delta);
+    const scenRes = clear(scenStack, delta, mode);
 
     // Basis is precomputed for baseline and no-virtuals. Any other edit shifts MCE
     // and holds basis fixed — stated on the page rather than passed off as exact.

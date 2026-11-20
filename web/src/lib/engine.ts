@@ -10,6 +10,16 @@
 export const BID_FLOOR = -150;
 export const BID_CAP = 1000;
 
+/**
+ * What the derate applies to — must match `DERATE_MODES` in clearing.py.
+ *   all_supply     every supply block, virtual included; virtual demand in full
+ *   physical_only  physical supply only; virtual bids clear MW for MW
+ *   symmetric      all supply and virtual demand alike
+ */
+export type DerateMode = 'all_supply' | 'physical_only' | 'symmetric';
+export const DERATE_MODES: DerateMode[] = ['all_supply', 'physical_only', 'symmetric'];
+export const DEFAULT_MODE: DerateMode = 'physical_only';
+
 /** Columnar side of the stack: price, MW, owner index — parallel arrays. */
 export interface Side { p: number[]; m: number[]; o: number[] }
 
@@ -119,8 +129,8 @@ function marginalAt(stack: Stack, price: number): Pick<Clearing, 'marginalSide' 
   return { marginalSide: 'none', marginal: [] };
 }
 
-export function clear(stack: Stack, delta = 1): Clearing {
-  const s = stack.supply, d = stack.demand;
+export function clear(stack: Stack, delta = 1, mode: DerateMode = DEFAULT_MODE): Clearing {
+  let s = stack.supply, d = stack.demand;
   const none = { marginalSide: 'none' as const, marginal: [] };
   const totalSupply = s.m.reduce((a, b) => a + b, 0);
   const totalDemand = d.m.reduce((a, b) => a + b, 0);
@@ -129,12 +139,23 @@ export function clear(stack: Stack, delta = 1): Clearing {
              demandAtPrice: totalDemand, binding: 'empty', ...none };
   }
 
+  // Where the derate does not apply to every supply block it is applied block by
+  // block; where it does, the summed curve is scaled. Same order as clearing.py.
+  let curveScale = delta;
+  if (mode === 'physical_only') {
+    s = { ...s, m: s.m.map((v, i) => (stack.ownerVirtual[s.o[i]] ? v : v * delta)) };
+    curveScale = 1;
+  } else if (mode === 'symmetric') {
+    d = { ...d, m: d.m.map((v, i) => (stack.ownerVirtual[d.o[i]] ? v * delta : v)) };
+  }
+  const scaledTotalSupply = s.m.reduce((a, b) => a + b, 0) * curveScale;
+
   const grid = [...new Set([...s.p, ...d.p])].sort((a, b) => a - b);
-  const sup = supplyCurve(s, grid).map((v) => v * delta);
+  const sup = supplyCurve(s, grid).map((v) => v * curveScale);
   const dem = demandCurve(d, grid);
 
-  // `delta` is defined as demand(p*)/supply(p*) at the realised price, so the
-  // feasibility test is an exact tie at that price and the outcome would otherwise
+  // In every mode `delta` is defined so that scaled supply equals scaled demand at
+  // the realised price, so the feasibility test is an exact tie at that price and the outcome would otherwise
   // depend on floating-point summation order. Must match clearing.py exactly.
   let k = -1;
   for (let i = 0; i < grid.length; i++) {
@@ -142,7 +163,7 @@ export function clear(stack: Stack, delta = 1): Clearing {
     if (sup[i] >= dem[i] - tol) { k = i; break; }
   }
   if (k < 0) {
-    return { price: BID_CAP, quantity: totalSupply * delta,
+    return { price: BID_CAP, quantity: scaledTotalSupply,
              supplyAtPrice: sup[sup.length - 1], demandAtPrice: dem[dem.length - 1],
              binding: 'supply_short', ...none };
   }

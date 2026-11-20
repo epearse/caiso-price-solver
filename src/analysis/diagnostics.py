@@ -152,7 +152,7 @@ def derate_sensitivity(con, month: int = 11, n_hours: int = 120) -> dict:
         st, d = stacks[ts], float(deltas.loc[ts])
         base = clear(st, delta=d).price
         for eps in (-0.05, -0.02, 0.02, 0.05):
-            rows.append(dict(eps=eps, dprice=clear(st, delta=d + eps).price - base))
+            rows.append(dict(eps=eps, dprice=clear(st, delta=d + eps).price - base))  # default mode
     df = pd.DataFrame(rows)
     return dict(
         n_hours=len(hrs),

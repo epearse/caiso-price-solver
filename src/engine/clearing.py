@@ -17,6 +17,23 @@ held back for ancillary services, or not committed. `delta` is the single scalar
 that carries all of it, fitted per hour against realised prices and then predicted
 from observable conditions.
 
+**What the derate applies to** is a modelling choice, and the measured effect of
+virtual bids changes sign with it. A convergence bid is not a power plant: the
+reasons physical supply goes undelivered (reserves, commitment, minimum-run times)
+do not apply to it, though congestion at its node can stop it clearing on either
+side. One scalar cannot represent that, so three treatments are provided:
+
+    all_supply     delta scales every supply block, virtual included; virtual demand
+                   counts in full. The original treatment. It shrinks virtual supply
+                   but not virtual demand, which tilts virtuals toward net buying.
+    physical_only  delta scales physical supply only; virtual bids clear MW for MW
+                   on both sides. The default.
+    symmetric      delta scales all supply and virtual demand alike, so virtual bids
+                   are shrunk equally on both sides.
+
+In each mode the implied derate is defined so that scaled supply equals scaled
+demand at the realised price (`implied_delta`). None of the three is provably right.
+
 Everything the engine ignores - transmission limits, reserves co-optimisation, unit
 commitment, minimum-run times - lands in the nodal basis or in a calibration residual
 rather than being silently absorbed into the energy price.
@@ -35,6 +52,19 @@ import numpy as np
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from config import BID_CAP, BID_FLOOR
+
+DERATE_MODES = ("all_supply", "physical_only", "symmetric")
+DEFAULT_MODE = "physical_only"
+
+
+def _check_mode(mode: str) -> None:
+    if mode not in DERATE_MODES:
+        raise ValueError(f"derate mode must be one of {DERATE_MODES}, not {mode!r}")
+
+
+def _flags(flags, n: int) -> np.ndarray:
+    """Virtual flags as a boolean array; a stack without them is all physical."""
+    return np.zeros(n, bool) if flags is None else np.asarray(flags, bool)
 
 
 @dataclass
@@ -100,15 +130,46 @@ class Clearing:
     marginal: list = field(default_factory=list)
 
 
-def clear(stack: Stack, delta: float = 1.0) -> Clearing:
+def at_price(stack: "Stack", price: float) -> dict:
+    """MW in the money at `price`, split physical / virtual on each side."""
+    s_mw, d_mw = np.asarray(stack.supply_mw, float), np.asarray(stack.demand_mw, float)
+    s_in = np.asarray(stack.supply_price, float) <= price
+    d_in = np.asarray(stack.demand_price, float) >= price
+    sv, dv = _flags(stack.supply_virtual, s_mw.size), _flags(stack.demand_virtual, d_mw.size)
+    return dict(phys_supply=float(s_mw[s_in & ~sv].sum()), virt_supply=float(s_mw[s_in & sv].sum()),
+                phys_demand=float(d_mw[d_in & ~dv].sum()), virt_demand=float(d_mw[d_in & dv].sum()))
+
+
+def implied_delta(stack: "Stack", price: float, mode: str = DEFAULT_MODE) -> float:
+    """The derate at which the stack clears at `price` under `mode`.
+
+    NaN when the mode has no sensible answer for the hour: a denominator that is
+    zero or negative, or a derate that comes out non-positive or non-finite."""
+    _check_mode(mode)
+    a = at_price(stack, price)
+    if mode == "all_supply":
+        num, den = a["phys_demand"] + a["virt_demand"], a["phys_supply"] + a["virt_supply"]
+    elif mode == "physical_only":
+        num, den = a["phys_demand"] + a["virt_demand"] - a["virt_supply"], a["phys_supply"]
+    else:
+        num, den = a["phys_demand"], a["phys_supply"] + a["virt_supply"] - a["virt_demand"]
+    if not den > 0:
+        return float("nan")
+    d = num / den
+    return float(d) if np.isfinite(d) and d > 0 else float("nan")
+
+
+def clear(stack: Stack, delta: float = 1.0, mode: str = DEFAULT_MODE) -> Clearing:
     """Intersect the aggregate supply and demand curves.
 
     Both curves are step functions, so the crossing is evaluated only at submitted
     bid prices - the price can only change where a block enters. Ties are broken
     toward the lowest price that satisfies demand, matching the convention that the
     marginal unit sets the price. `delta` scales the supply curve to reflect the
-    share of offered capacity that is actually deliverable.
+    share of offered capacity that is actually deliverable; `mode` says which blocks
+    it applies to (see the module docstring).
     """
+    _check_mode(mode)
     s_mw, s_p = np.asarray(stack.supply_mw, float), np.asarray(stack.supply_price, float)
     d_mw, d_p = np.asarray(stack.demand_mw, float), np.asarray(stack.demand_price, float)
 
@@ -116,6 +177,16 @@ def clear(stack: Stack, delta: float = 1.0) -> Clearing:
     total_supply = s_mw.sum()
     if s_mw.size == 0 or d_mw.size == 0:
         return Clearing(float("nan"), 0.0, total_supply, total_demand, "empty")
+
+    # Where the derate does not apply to every supply block it is applied block by
+    # block here; where it does, the summed curve is scaled below, as it always was.
+    curve_scale = delta
+    if mode == "physical_only":
+        s_mw = np.where(_flags(stack.supply_virtual, s_mw.size), s_mw, s_mw * delta)
+        curve_scale = 1.0
+    elif mode == "symmetric":
+        d_mw = np.where(_flags(stack.demand_virtual, d_mw.size), d_mw * delta, d_mw)
+    scaled_total_supply = float(s_mw.sum() * curve_scale)
 
     # Candidate prices: every distinct submitted price on either side.
     grid = np.unique(np.concatenate([s_p, d_p]))
@@ -126,7 +197,7 @@ def clear(stack: Stack, delta: float = 1.0) -> Clearing:
     cum_s = np.cumsum(smw_sorted)
     supply_at = cum_s[np.searchsorted(sp_sorted, grid, side="right") - 1]
     supply_at = np.where(np.searchsorted(sp_sorted, grid, side="right") == 0, 0.0, supply_at)
-    supply_at = supply_at * delta
+    supply_at = supply_at * curve_scale
 
     # demand(p): cumulative MW bid at or above each grid price.
     order_d = np.argsort(d_p, kind="stable")
@@ -135,8 +206,8 @@ def clear(stack: Stack, delta: float = 1.0) -> Clearing:
     idx_d = np.searchsorted(dp_sorted, grid, side="left")
     demand_at = np.where(idx_d < len(dp_sorted), cum_d_rev[np.minimum(idx_d, len(dp_sorted) - 1)], 0.0)
 
-    # `delta` is defined as demand(p*)/supply(p*) at the realised price, so
-    # `delta * supply == demand` holds EXACTLY at that price by construction. That
+    # In every mode `delta` is defined so that scaled supply equals scaled demand
+    # EXACTLY at the realised price (see `implied_delta`). That
     # makes the feasibility test a floating-point knife-edge precisely where it
     # matters most, and the answer then depends on summation order. A tie means the
     # market clears, so it is admitted explicitly rather than left to rounding.
@@ -144,7 +215,7 @@ def clear(stack: Stack, delta: float = 1.0) -> Clearing:
     feasible = supply_at >= demand_at - tol
     if not feasible.any():
         # Supply never catches demand: the market is short and prices at the cap.
-        return Clearing(BID_CAP, float(total_supply * delta), float(supply_at[-1]),
+        return Clearing(BID_CAP, scaled_total_supply, float(supply_at[-1]),
                         float(demand_at[-1]), "supply_short")
 
     k = int(np.argmax(feasible))

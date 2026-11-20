@@ -36,6 +36,8 @@ TEST_MONTHS = [10, 11, 12]
 # Anything derived from the realised price is excluded: `delta` is defined at the
 # actual clearing price, so using it (or actual_mce) as an input would leak.
 LEAK = {"ts_gmt", "actual_mce", "delta", "opr_dt"}
+# Likewise the per-mode derates and the MW in the money at the realised price.
+LEAK_PREFIXES = ("delta_", "atp_")
 ENGINE_COLS = {"raw_lambda", "raw_quantity", "raw_lambda_novirt", "raw_quantity_novirt"}
 
 PARAMS = dict(objective="regression", metric="l2", learning_rate=0.05,
@@ -44,7 +46,7 @@ PARAMS = dict(objective="regression", metric="l2", learning_rate=0.05,
 
 
 def feature_cols(df: pd.DataFrame, use_engine: bool) -> list:
-    cols = [c for c in df.columns if c not in LEAK]
+    cols = [c for c in df.columns if c not in LEAK and not c.startswith(LEAK_PREFIXES)]
     if not use_engine:
         cols = [c for c in cols if c not in ENGINE_COLS]
     return cols

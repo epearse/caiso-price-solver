@@ -16,7 +16,7 @@ import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from config import DERIVED
 from db import connect
-from engine.clearing import clear
+from engine.clearing import clear, implied_delta, at_price, DERATE_MODES, DEFAULT_MODE
 from engine.loader import load_month
 
 # Prices at which the supply and demand curves are sampled. These give the models
@@ -74,9 +74,14 @@ def build(con) -> pd.DataFrame:
             if ts in mce.index:
                 actual = float(mce.loc[ts])
                 rec["actual_mce"] = actual
-                s_at = float(stack.supply_mw[stack.supply_price <= actual].sum())
-                d_at = float(stack.demand_mw[stack.demand_price >= actual].sum())
-                rec["delta"] = d_at / s_at if s_at > 0 else np.nan
+                # One implied derate per treatment; `delta` is the default one.
+                # These and the atp_ ("at the realised price") columns are computed
+                # from the published price and must never be model inputs.
+                for mode in DERATE_MODES:
+                    rec[f"delta_{mode}"] = implied_delta(stack, actual, mode)
+                rec["delta"] = rec[f"delta_{DEFAULT_MODE}"]
+                for k, v in at_price(stack, actual).items():
+                    rec[f"atp_{k}"] = v
             else:
                 rec["actual_mce"] = np.nan
                 rec["delta"] = np.nan
@@ -107,6 +112,10 @@ if __name__ == "__main__":
     print(f"\nfeatures_hourly.parquet: {len(df):,} hours x {df.shape[1]} columns")
     ok = df.dropna(subset=["actual_mce"])
     print(f"hours with actual MCE: {len(ok):,}")
+    for mode in DERATE_MODES:
+        d = ok[f"delta_{mode}"]
+        print(f"derate, {mode:14s}: mean {d.mean():.3f}  sd {d.std():.3f}  "
+              f"undefined in {int(d.isna().sum())} hours")
     print(f"raw_lambda vs actual_mce : corr {ok.raw_lambda.corr(ok.actual_mce):.4f}  "
           f"MAE {(ok.raw_lambda - ok.actual_mce).abs().mean():.2f}")
     print(f"delta: mean {ok.delta.mean():.3f}  sd {ok.delta.std():.3f}")
