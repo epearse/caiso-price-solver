@@ -41,7 +41,17 @@ export interface InfluenceRow { owner: string; n_pivotal: number; mean_impact: n
   mean_abs_impact: number; total_abs: number; max_impact: number; min_impact: number;
   is_virtual: boolean }
 
+/** Price change times published ISO load, for one derate treatment. */
+export interface CFCost {
+  label: string; hours: number; hours_without_load: number; hours_skipped: number | null;
+  load_twh: number; annual_cost_usd: number; load_weighted_mean: number;
+  unweighted_mean: number; share_hours_positive: number; share_hours_negative: number;
+}
+
 export interface CFVirtual {
+  // Absent in bundles exported before the cost measure existed.
+  cost?: Record<string, CFCost> | null;
+  default_mode?: string;
   overall: { mean: number; median: number; sd: number; mean_abs: number;
     pct_hours_moved: number; p05: number; p95: number; n: number };
   monthly: { month: number; mean: number; std: number; min: number; max: number; count: number }[];
