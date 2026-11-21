@@ -19,12 +19,11 @@ It exists to answer two questions:
 
 Both are answered by *re-clearing the market*, not by ablating a regression feature.
 
-> **Most numbers further down this page, and everything on the live site, predate
-> four corrections to how bids are read** (see "Data corrections applied") **and the
-> change in what the derate applies to.** The virtual-bid result above and the
-> sections "The availability derate", "What the derate applies to" and "Day-ahead
-> energy cost effect" are current, and so are the accuracy tables under "Results".
-> The bidder tables and the live site are not yet regenerated.
+> **The live site linked above still shows the original numbers.** It is published from
+> the upstream repository and predates four corrections to how bids are read (see "Data
+> corrections applied") and the change in what the derate applies to. Everything on
+> this page, and the bundle in `web/public/data` that the site is built from, has been
+> regenerated on the corrected stack.
 
 ## Anonymity
 
@@ -368,33 +367,37 @@ used.
 These are different questions and the data separates them sharply. A bidder is **marginal**
 when their block sits exactly at the clearing price; **pivotal** when removing them moves it.
 
-By resource class, share-weighted over 8,734 hours:
+By resource class, share-weighted over 8,757 hours (default derate treatment):
 
 | Class | Share of price-setting hours | Avg price when setting |
 |---|---:|---:|
-| GENERATOR | 51.3% | $39.20 |
-| **VIRTUAL** | **46.8%** | $34.79 |
-| INTERTIE | 1.7% | $37.32 |
-| LOAD | 0.2% | $40.80 |
+| GENERATOR | 50.4% | $40.26 |
+| **VIRTUAL** | **47.7%** | $33.90 |
+| INTERTIE | 1.8% | $39.72 |
+| LOAD | 0.2% | $43.72 |
 
-**Convergence bids are the marginal unit in nearly half of all hours** — despite being tiny
-at the margin (2-15 MW, against 35-230 MW for generators). They are numerous and finely
-priced, so they land exactly on the intersection. The margin is uncontested ~88% of the
-time, and the demand side sets the price in ~10% of hours.
+**Convergence bids are the marginal unit in nearly half of all hours**, despite being
+small at the margin: 1–18 MW per marginal block (10th–90th percentile) against 1–88 MW
+for generators. They are numerous and finely priced, so they land exactly on the
+intersection. The margin is uncontested (one bidder) in 89% of hours, and the demand
+side sets the price in 12% of hours.
 
 But being marginal is not the same as mattering:
 
 | Bidder (SC) | Class | Hours marginal | Hours pivotal | Mean abs impact |
 |---|---|---:|---:|---:|
-| V186155 | virtual | 856 | 6,404 | $0.55 |
-| 187496 | generator | 699 | 8,575 | $1.23 |
-| 245368 | generator | 574 | 8,625 | $2.90 |
-| 139213 | generator | 531 | 8,703 | $3.90 |
+| V186155 | virtual | 913 | 6,661 | $0.61 |
+| 187496 | generator | 658 | 8,653 | $1.43 |
+| 139213 | generator | 614 | 8,727 | $3.23 |
+| 245368 | generator | 603 | 8,614 | $3.46 |
 
 The top virtual sets the price more often than any physical bidder, yet removing it moves
-the price by $0.55 on average — it is individually replaceable. The generator sets the price
-less often but is worth seven times as much when withdrawn. **Price formation lives closer
-to *marginal*; market power lives closer to *pivotal*.**
+the price by $0.61 on average: it is individually replaceable. The generators set the
+price less often but are worth two to six times as much when withdrawn. **Price
+formation lives closer to *marginal*; market power lives closer to *pivotal*.**
+
+The most influential virtual bidder by total absolute impact is `V172906` (26th of 519
+bidders; pivotal in 7,704 hours, mean absolute impact $0.77).
 
 > Keying matters here. Virtual bids carry no resource id, so a resource-level ranking that
 > keys them by `PSEUDO_SC_ID` compares 164 virtual entities against 3,164 physical ones and
