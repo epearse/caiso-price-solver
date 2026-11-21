@@ -22,10 +22,10 @@ Both are answered by *re-clearing the market*, not by ablating a regression feat
 > **Most numbers further down this page, and everything on the live site, predate
 > four corrections to how bids are read** (see "Data corrections applied") **and the
 > change in what the derate applies to.** The virtual-bid result above and the
-> sections "The availability derate" and "What the derate applies to" are current.
-> The accuracy tables, the bidder tables and the site are not: they will be
-> regenerated together once the validation method (#6) and the cost measure (#7)
-> are settled, since both change what is reported.
+> sections "The availability derate", "What the derate applies to" and "Day-ahead
+> energy cost effect" are current. The accuracy tables, the bidder tables and the
+> site are not: they will be regenerated together once the validation method (#6)
+> is settled, since that changes the models behind them.
 
 ## Anonymity
 
@@ -115,9 +115,39 @@ What this supports and what it does not:
 - **None of the three is provably right.** Some virtual bids do fail to clear because
   of congestion at their node, on both sides, and one scalar cannot represent that
   without a network model.
-- **A lower day-ahead price is not a lower cost to load.** This is the simple average
-  of hourly system energy prices. What load pays depends on the MW bought in each hour,
-  on real-time prices, and on uplift; see issues #7 and #8.
+- **A lower day-ahead price is not a lower cost to load.** The table above is the
+  simple average of hourly prices. The next section weights it by load; real-time
+  prices and uplift are still missing (issue #8).
+
+### Day-ahead energy cost effect, system price only
+
+Each hour's price change is multiplied by CAISO's published day-ahead load for that
+hour and summed over the year (202.3 TWh across 8,757 hours, none skipped). The weight
+is published load, not the engine's cleared quantity, which also counts virtual demand,
+exports and storage charging.
+
+| Treatment | Annual effect | Load-weighted mean, $/MWh | Unweighted mean, $/MWh | Hours lowered / raised |
+|---|---:|---:|---:|---:|
+| `physical_only` (default) | **−$790 million** | −3.90 | −3.87 | 80% / 19% |
+| `symmetric` | **−$540 million** | −2.67 | −2.63 | 80% / 19% |
+| `all_supply` (original) | **−$67 million** | −0.33 | −0.28 | 59% / 40% |
+
+Negative means load paid less for day-ahead energy with virtual bids in the market.
+Weighting by load barely moves the mean, because the effect is not concentrated in
+high-load hours. It is concentrated by time of day: under the default treatment it is
+−$4.80 to −$8.50/MWh from the evening ramp through the early morning (hours ending 20
+to 7) and within about a dollar and a half of zero in the solar hours (hours ending 9
+to 17). Every month is negative under the default and symmetric treatments; under the
+original one, May, June and November are positive.
+
+**This is not procurement cost.** It leaves out real-time settlement, uplift and
+congestion. And because the derate holds unit commitment fixed, neither the claimed
+benefit of virtual bidding (better commitment) nor the claimed harm (extra residual
+commitment paid for through uplift) can appear in it. Whether virtual bidding lowers
+the total cost of serving load is not answered by these numbers.
+
+`python src/analysis/counterfactual.py --what cost` recomputes this from an existing
+counterfactual without re-clearing.
 
 `tests/verify_modes.py` runs all three treatments on every exported hour in both the
 Python and the browser engine and checks that they agree.

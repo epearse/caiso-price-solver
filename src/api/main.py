@@ -14,6 +14,7 @@ import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from config import DERIVED, MODELS
 from api import service
+from engine.clearing import DEFAULT_MODE
 
 app = FastAPI(title="CAISO DAM Price Surrogate", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -122,8 +123,12 @@ def cf_virtual():
     # The same effect under each derate treatment; `overall` is the default one.
     sp = DERIVED / "cf_virtual_summary.parquet"
     modes = pd.read_parquet(sp).reset_index().to_dict("records") if sp.exists() else []
+    cp = DERIVED / "cf_virtual_cost.json"
+    cost = json.loads(cp.read_text()) if cp.exists() else None
     return _clean(dict(
         modes=modes,
+        # Dollars, per derate treatment: price change times published ISO load.
+        cost=cost, default_mode=DEFAULT_MODE,
         overall=dict(mean=float(df.delta_price.mean()), median=float(df.delta_price.median()),
                      sd=float(df.delta_price.std()), mean_abs=float(df.delta_price.abs().mean()),
                      pct_hours_moved=float((df.delta_price.abs() > 0.01).mean()),

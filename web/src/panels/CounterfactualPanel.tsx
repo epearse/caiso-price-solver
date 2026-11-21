@@ -19,6 +19,8 @@ export function CounterfactualPanel() {
   if (!cf) return <Card title="Virtual bid counterfactual"><Spinner label="loading…" /></Card>;
 
   const o = cf.overall;
+  const costModes = cf.cost ? Object.entries(cf.cost) : [];
+  const musd = (v: number) => `${v < 0 ? '−' : '+'}$${Math.abs(v / 1e6).toFixed(0)}M`;
   const monthly = cf.monthly.map((m) => ({ ...m, name: MONTHS[m.month - 1] }));
 
   // Distribution of the hourly price impact, binned.
@@ -36,7 +38,7 @@ export function CounterfactualPanel() {
         subtitle="Every hour of 2025 cleared twice — full stack, then with all convergence bids removed — holding the availability derate fixed.">
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
           <Stat label="Mean impact" size="lg" tone={o.mean > 0 ? 'pos' : 'neg'}
-            value={signedUsd(o.mean)} sub="per hour, full year" />
+            value={signedUsd(o.mean)} sub="$/MWh, unweighted mean of hourly changes" />
           <Stat label="Median impact" size="lg" value={signedUsd(o.median)} sub="typical hour" />
           <Stat label="Mean absolute" size="lg" value={usd(o.mean_abs)} sub="size regardless of sign" />
           <Stat label="Hours moved" size="lg" value={pct(o.pct_hours_moved)} sub={`of ${num(o.n)} hours`} />
@@ -44,12 +46,35 @@ export function CounterfactualPanel() {
             value={`${signedUsd(o.p05)} … ${signedUsd(o.p95)}`} sub="hourly impact" />
         </div>
         <p className="mt-4 text-[12px] leading-relaxed text-[var(--text-secondary)]">
-          Across 2025 virtual bids raised the system energy price by an average of{' '}
-          <strong className="text-[var(--text-primary)]">{signedUsd(o.mean)}/MWh</strong>. The median
-          hour is far smaller ({signedUsd(o.median)}), so the mean is carried by a minority of hours
-          with large positive impact — the distribution below is right-skewed, not centred.
+          Across 2025 virtual bids {o.mean > 0 ? 'raised' : 'lowered'} the system energy price by
+          an average of{' '}
+          <strong className="text-[var(--text-primary)]">{signedUsd(o.mean)}/MWh</strong>{' '}
+          (median hour {signedUsd(o.median)}). This is an unweighted mean: a 3 a.m. hour counts the
+          same as a 6 p.m. peak hour.
         </p>
       </Card>
+
+      {costModes.length > 0 && (
+        <Card title="Day-ahead energy cost effect, system price only"
+          subtitle="Hourly price change × published ISO load, summed over the year, under each treatment of the availability derate.">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+            {costModes.map(([mode, c]) => (
+              <Stat key={mode} size="lg" tone={c.annual_cost_usd > 0 ? 'pos' : 'neg'}
+                label={mode === cf.default_mode ? `${mode} (default)` : mode}
+                value={musd(c.annual_cost_usd)}
+                sub={`${signedUsd(c.load_weighted_mean)}/MWh load-weighted · ${signedUsd(c.unweighted_mean)} unweighted · ${num(c.hours)} hours`} />
+            ))}
+          </div>
+          <p className="mt-4 text-[12px] leading-relaxed text-[var(--text-secondary)]">
+            Negative means load paid less for day-ahead energy with virtual bids in the market.
+            The direction is the same under all three treatments; the size is not. This is{' '}
+            <strong className="text-[var(--text-primary)]">not procurement cost</strong>: it leaves
+            out real-time settlement, uplift and congestion, and unit commitment is held fixed, so
+            neither the claimed benefit of virtual bidding (better commitment) nor the claimed harm
+            (extra commitment paid for through uplift) can appear in it.
+          </p>
+        </Card>
+      )}
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Card title="Impact by month"
@@ -79,7 +104,7 @@ export function CounterfactualPanel() {
         </Card>
 
         <Card title="Distribution of hourly impact"
-          subtitle="How often virtuals moved price by how much, across all 8,734 hours.">
+          subtitle={`How often virtuals moved price by how much, across all ${num(o.n)} hours.`}>
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={bins} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
               <CartesianGrid stroke="var(--border-1)" vertical={false} />
@@ -99,7 +124,7 @@ export function CounterfactualPanel() {
             </BarChart>
           </ResponsiveContainer>
           <p className="mt-1 text-[10.5px] text-[var(--text-muted)]">
-            Mass sits just right of zero with a long positive tail.
+            Hours right of the dashed line are those where virtuals raised the price.
           </p>
         </Card>
       </div>

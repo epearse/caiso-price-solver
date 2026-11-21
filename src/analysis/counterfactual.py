@@ -24,6 +24,8 @@ Bidder identifiers stay opaque throughout. `SCHEDULINGCOORDINATOR_SEQ` and
 """
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 
@@ -91,6 +93,73 @@ def summarise_modes(cf: pd.DataFrame, feats: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out).set_index("mode")
 
 
+# What the dollar figure is, and the only thing it should be called. It is NOT
+# procurement cost: it leaves out real-time settlement, uplift and congestion, and
+# because the derate holds unit commitment fixed it cannot show either the claimed
+# benefit of virtual bidding (better commitment) or the claimed harm (extra residual
+# commitment paid for through uplift).
+COST_LABEL = "day-ahead energy cost effect, system price only"
+
+
+def add_cost(cf: pd.DataFrame, system: pd.DataFrame) -> pd.DataFrame:
+    """Attach published ISO load to each hour and price the change against it.
+
+    The weight is `iso_load`, the day-ahead scheduled load CAISO publishes. It is
+    deliberately not the engine's cleared quantity (`qty_with`), which also counts
+    virtual demand, exports and storage charging and runs about 10 GW higher."""
+    sysd = system[["ts_gmt", "iso_load", "opr_hr"]]
+    out = cf.drop(columns=[c for c in ("iso_load", "opr_hr", "delta_cost_usd") if c in cf.columns])
+    out = out.merge(sysd, on="ts_gmt", how="left")
+    out["delta_cost_usd"] = out.delta_price * out.iso_load
+    return out
+
+
+def cost_summary(cf: pd.DataFrame, hours_with_price: int | None = None) -> dict:
+    """Per derate mode: annual dollars, load-weighted and unweighted mean, and the
+    breakdown by month and by hour of day. `cf` must have been through `add_cost`."""
+    out = {}
+    for mode, c in cf.groupby("mode"):
+        ok = c.dropna(subset=["iso_load", "delta_price"])
+        load = ok.iso_load.sum()
+
+        def part(g):
+            return dict(hours=int(len(g)),
+                        cost_usd=float(g.delta_cost_usd.sum()),
+                        load_weighted_mean=float(g.delta_cost_usd.sum() / g.iso_load.sum()),
+                        unweighted_mean=float(g.delta_price.mean()),
+                        avg_load_mw=float(g.iso_load.mean()))
+
+        out[mode] = dict(
+            label=COST_LABEL,
+            hours=int(len(ok)),
+            hours_without_load=int(len(c) - len(ok)),
+            hours_skipped=None if hours_with_price is None else int(hours_with_price - len(c)),
+            load_twh=float(load / 1e6),
+            annual_cost_usd=float(ok.delta_cost_usd.sum()),
+            load_weighted_mean=float(ok.delta_cost_usd.sum() / load),
+            unweighted_mean=float(ok.delta_price.mean()),
+            share_hours_positive=float((ok.delta_price > 0.005).mean()),
+            share_hours_negative=float((ok.delta_price < -0.005).mean()),
+            by_month=[dict(month=int(m), **part(g)) for m, g in ok.groupby("month")],
+            # opr_hr is CAISO's hour ending in Pacific prevailing time (1-24; 25 on
+            # the long day in November).
+            by_hour=[dict(hour_ending=int(h), **part(g)) for h, g in ok.groupby("opr_hr")],
+        )
+    return out
+
+
+def write_cost(con, modes: pd.DataFrame, feats: pd.DataFrame) -> dict:
+    system = con.execute(f"select * from '{DERIVED}/system_hourly.parquet'").df()
+    modes = add_cost(modes, system)
+    modes.to_parquet(DERIVED / "cf_virtual_modes.parquet", index=False)
+    summary = cost_summary(modes, int(feats.actual_mce.notna().sum()))
+    (DERIVED / "cf_virtual_cost.json").write_text(json.dumps(summary, indent=1))
+    print(f"\n{COST_LABEL}:")
+    print(pd.DataFrame({m: {k: v for k, v in s.items() if not isinstance(v, (list, str))}
+                        for m, s in summary.items()}).round(3).to_string())
+    return summary
+
+
 def bidder_influence(con, deltas: pd.Series, owner_level: str,
                      hour_stride: int = 1, mode: str = DEFAULT_MODE) -> pd.DataFrame:
     """Leave-one-out price impact per anonymised bidder.
@@ -146,7 +215,9 @@ def bidder_influence(con, deltas: pd.Series, owner_level: str,
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--what", choices=["virtual", "sc", "res"], required=True)
+    ap.add_argument("--what", choices=["virtual", "cost", "sc", "res"], required=True,
+                    help="'cost' re-prices an existing virtual counterfactual against "
+                         "ISO load without re-clearing")
     ap.add_argument("--stride", type=int, default=1)
     ap.add_argument("--mode", choices=DERATE_MODES, default=DEFAULT_MODE,
                     help="derate treatment for the bidder sweeps; the virtual "
@@ -157,19 +228,23 @@ if __name__ == "__main__":
     feats = pd.read_parquet(DERIVED / "features_hourly.parquet")
     deltas = feats.set_index("ts_gmt")[f"delta_{args.mode}"].dropna()
 
-    if args.what == "virtual":
+    if args.what == "cost":
+        write_cost(con, pd.read_parquet(DERIVED / "cf_virtual_modes.parquet"), feats)
+    elif args.what == "virtual":
         by_mode = feats.dropna(subset=["actual_mce"]).set_index("ts_gmt")[
             [f"delta_{m}" for m in DERATE_MODES]]
         by_mode.columns = list(DERATE_MODES)
         modes = virtual_counterfactual(con, by_mode)
         modes.to_parquet(DERIVED / "cf_virtual_modes.parquet", index=False)
+        write_cost(con, modes, feats)
+        modes = pd.read_parquet(DERIVED / "cf_virtual_modes.parquet")
         summary = summarise_modes(modes, feats)
         summary.to_parquet(DERIVED / "cf_virtual_summary.parquet")
         print("\nvirtual-bid effect by derate treatment "
               "($/MWh, positive = virtuals raised price):")
         print(summary.round(3).T.to_string())
         # cf_virtual.parquet keeps its old shape and holds the default treatment.
-        df = modes[modes["mode"] == DEFAULT_MODE].drop(columns=["mode", "delta"])
+        df = modes[modes["mode"] == DEFAULT_MODE].drop(columns=["mode", "delta", "opr_hr"])
         df.to_parquet(DERIVED / "cf_virtual.parquet", index=False)
         print(f"\n{DEFAULT_MODE}: {len(df):,} hours")
         print(f"price impact of virtual bids ($/MWh, positive = virtuals raised price):")
