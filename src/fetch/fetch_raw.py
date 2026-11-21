@@ -12,6 +12,16 @@
 | lmp      | SingleZip PRC_LMP DAM, all nodes (v12)| 1 / day  | 2025-DAM-LMP-full.parquet       |
 | slrs     | SingleZip ENE_SLRS DAM (v1)           | 1 / month| caiso-ene-slrs-data/.../*.csv   |
 | nodes    | CAISO price-map node list             | 1        | node_locations.csv              |
+| rt_fmm   | SingleZip PRC_RTPD_LMP RTPD (v3), 7 nodes | 1 / month | rt_fmm_prices_2025.parquet  |
+| rt_rtd   | SingleZip PRC_INTVL_LMP RTM (v3), 7 nodes | 1 / day   | rt_rtd_prices_2025.parquet  |
+| cb_awards| SingleZip ENE_CB_AWARDS (v1)          | 1 / month| cb_awards_2025.parquet          |
+| cb_clr   | SingleZip ENE_CB_CLR_AWARDS (v1)      | 1 / day  | cb_clr_awards_2025.parquet      |
+| ruc      | SingleZip ENE_SLRS RUC (v1)           | 1 / month| ruc_schedules_2025.parquet      |
+| exc_disp | SingleZip ENE_DISP (v1)               | 1 / month| exceptional_dispatch_2025.parquet |
+
+The last six feed the cost-to-load work (issue #8). Uplift (bid cost recovery) is
+not among them: OASIS lists zonal and resource-specific uplift reports, but their
+query names are not in the public interface specification.
 
 Both bid reports are published about 90 days after the trade day. Everything is
 resumable: a day already on disk is skipped (see `oasis.py`).
@@ -34,8 +44,9 @@ from pathlib import Path
 import duckdb
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from config import (DAM_BIDS, DAM_LMP, ENE_SLRS, NODE_GEO_CSV, RAW, SHARDS,
-                    VIRTUAL_BIDS, YEAR)
+from config import (CB_AWARDS, CB_CLR, DAM_BIDS, DAM_LMP, ENE_SLRS, EXC_DISP,
+                    NODE_GEO_CSV, RAW, RT_FMM, RT_RTD, RUC_SLRS, SHARDS, VIRTUAL_BIDS,
+                    YEAR)
 from fetch import oasis
 
 BATCH = 40  # shards per read_csv call
@@ -226,7 +237,123 @@ def nodes(a) -> None:
     _vintage(NODE_GEO_CSV, rows=len(rows), source=PRICE_MAP)
 
 
-TARGETS = dict(bids=bids, virtuals=virtuals, lmp=lmp, slrs=slrs, nodes=nodes)
+# --- real-time prices and the cost components (issue #8) ------------------------
+# The load aggregation points (DLAPs) are what load is settled at; the trading hubs
+# are the usual reference prices. A named-node request may span up to 31 days, so
+# these are pulled a month at a time. Pulling every node is a different request
+# type that OASIS limits to one hour per call; it is not needed for system-level
+# work, because the energy component (MCE) is the same at every node.
+PRICE_NODES = ("TH_NP15_GEN-APND", "TH_SP15_GEN-APND", "TH_ZP26_GEN-APND",
+               "DLAP_PGAE-APND", "DLAP_SCE-APND", "DLAP_SDGE-APND", "DLAP_VEA-APND")
+
+
+def _months(start: date, end: date) -> list[tuple[str, date, date]]:
+    """(key, first day, day after last) for each calendar month touched by the range."""
+    out, m = [], date(start.year, start.month, 1)
+    while m <= end:
+        nxt = date(m.year + (m.month == 12), m.month % 12 + 1, 1)
+        out.append((f"{m:%Y-%m}", max(m, start), min(nxt, end + timedelta(1))))
+        m = nxt
+    return out
+
+
+def _monthly(a, name: str, out: Path, params: dict, select: str, distinct: bool = True) -> None:
+    """Pull `params` one month at a time into shards/<name>, then compact to `out`."""
+    shard_dir = a.shards or SHARDS / name
+    if not a.no_download and not a.shards:
+        spans = {k: (s, e) for k, s, e in _months(a.start, a.end)}
+        oasis.pull(shard_dir, list(spans), lambda k: ("SingleZip", dict(
+            params, resultformat="6",
+            startdatetime=oasis.midnight_stamp(spans[k][0]),
+            enddatetime=oasis.midnight_stamp(spans[k][1]))))
+    _compact(_con(), shard_dir, out, select, "OPR_DT", a.start, a.end, distinct=distinct)
+
+
+_PRICE_COLS = """
+    INTERVALSTARTTIME_GMT, INTERVALENDTIME_GMT, OPR_DT::date as OPR_DT,
+    OPR_HR::int as OPR_HR, OPR_INTERVAL::int as OPR_INTERVAL, NODE_ID,
+    MARKET_RUN_ID, LMP_TYPE, {value}::double as PRC
+"""
+
+
+def rt_fmm(a) -> None:
+    """15-minute market (FMM, run as RTPD) prices at the hubs and DLAPs. This is the
+    price virtual bids are settled against."""
+    _monthly(a, "rt_fmm", RT_FMM, dict(queryname="PRC_RTPD_LMP", market_run_id="RTPD",
+                                       node=",".join(PRICE_NODES), version="3"),
+             _PRICE_COLS.format(value="PRC"))
+
+
+def rt_rtd(a) -> None:
+    """5-minute real-time dispatch (RTD) prices at the hubs and DLAPs. Real-time
+    imbalance energy is settled on these.
+
+    About 10,000 rows a day. Month- and week-sized requests for this report were
+    dropped or left hanging by OASIS; a day at a time returns in seconds."""
+    shard_dir = a.shards or SHARDS / "rt_rtd_daily"
+    if not a.no_download and not a.shards:
+        oasis.pull(shard_dir, [str(d) for d in oasis.days(a.start, a.end)],
+                   lambda k: ("SingleZip", dict(
+                       queryname="PRC_INTVL_LMP", market_run_id="RTM",
+                       node=",".join(PRICE_NODES), version="3", resultformat="6",
+                       startdatetime=oasis.midnight_stamp(date.fromisoformat(k)),
+                       enddatetime=oasis.midnight_stamp(date.fromisoformat(k) + timedelta(1)))))
+    _compact(_con(), shard_dir, RT_RTD, _PRICE_COLS.format(value="VALUE"), "OPR_DT",
+             a.start, a.end, distinct=True)
+
+
+def cb_awards(a) -> None:
+    """Cleared virtual supply and demand, ISO total, per hour."""
+    _monthly(a, "cb_awards", CB_AWARDS, dict(queryname="ENE_CB_AWARDS", version="1"), """
+        INTERVALSTARTTIME_GMT, INTERVALENDTIME_GMT, OPR_DT::date as OPR_DT,
+        OPR_HR::int as OPR_HR, MARKET_RUN_ID, VIRTUALBID_TYPE, XML_DATA_ITEM,
+        MW::double as MW
+    """)
+
+
+def cb_clr(a) -> None:
+    """Net cleared virtual MW (supply minus demand) per real node, per hour. No
+    bidder identity: it cannot be tied to the masked bids.
+
+    This report returns only the first trade day of whatever range it is given, so
+    it is pulled one day at a time (about 35,000 rows a day)."""
+    shard_dir = a.shards or SHARDS / "cb_clr_daily"
+    if not a.no_download and not a.shards:
+        oasis.pull(shard_dir, [str(d) for d in oasis.days(a.start, a.end)],
+                   lambda k: ("SingleZip", dict(
+                       queryname="ENE_CB_CLR_AWARDS", version="1", resultformat="6",
+                       startdatetime=oasis.midnight_stamp(date.fromisoformat(k)),
+                       enddatetime=oasis.midnight_stamp(date.fromisoformat(k) + timedelta(1)))))
+    _compact(_con(), shard_dir, CB_CLR, """
+        INTERVALSTARTTIME_GMT, INTERVALENDTIME_GMT, OPR_DT::date as OPR_DT,
+        OPR_HR::int as OPR_HR, MARKET_RUN_ID, NODE_ID, XML_DATA_ITEM,
+        MW::double as MW
+    """, "OPR_DT", a.start, a.end, distinct=True)
+
+
+def ruc(a) -> None:
+    """Residual unit commitment: capacity committed after the day-ahead market, by
+    TAC area."""
+    _monthly(a, "ruc", RUC_SLRS, dict(queryname="ENE_SLRS", market_run_id="RUC",
+                                      tac_zone_name="ALL", schedule="ALL", version="1"), """
+        INTERVALSTARTTIME_GMT, INTERVALENDTIME_GMT, OPR_DT::date as OPR_DT,
+        OPR_HR::int as OPR_HR, MARKET_RUN_ID, TAC_ZONE_NAME, SCHEDULE, XML_DATA_ITEM,
+        MW::double as MW
+    """)
+
+
+def exc_disp(a) -> None:
+    """Exceptional dispatch: MWh and weighted price by TAC area and instruction type."""
+    _monthly(a, "exc_disp", EXC_DISP, dict(queryname="ENE_DISP", version="1"), """
+        INTERVALSTARTTIME_GMT, INTERVALENDTIME_GMT, OPR_DT::date as OPR_DT,
+        OPR_HR::int as OPR_HR, TAC_AREA_NAME, DISP_TYPE, XML_DATA_ITEM,
+        INSTRUCTION_TYPE, MW::double as MW
+    """)
+
+
+TARGETS = dict(bids=bids, virtuals=virtuals, lmp=lmp, slrs=slrs, nodes=nodes,
+               rt_fmm=rt_fmm, rt_rtd=rt_rtd, cb_awards=cb_awards, cb_clr=cb_clr,
+               ruc=ruc, exc_disp=exc_disp)
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])

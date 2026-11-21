@@ -150,6 +150,86 @@ counterfactual without re-clearing.
 `tests/verify_modes.py` runs all three treatments on every exported hour in both the
 Python and the browser engine and checks that they agree.
 
+## Toward total cost to load (partial)
+
+The question behind this project is whether virtual bidding lowers the total cost of
+serving load. That cost is day-ahead purchases plus real-time imbalance plus uplift,
+and virtual bidders' profits come out of the same pot. `src/analysis/cost_to_load.py`
+assembles what public data supports. **The result is partial**: uplift (bid cost
+recovery) and the real-time imbalance cost to load are not measured, and neither is
+the congestion part of virtual bidders' profit. Nothing below approximates them.
+
+New inputs, all from OASIS (`fetch_raw.py rt_fmm rt_rtd cb_awards cb_clr ruc exc_disp`):
+15-minute (FMM) and 5-minute (RTD) prices at the three trading hubs and four load
+aggregation points; ISO-wide and per-node cleared virtual awards; residual unit
+commitment (RUC); exceptional dispatch. The FMM hub prices match an independent copy
+to the cent in all 105,024 hub-intervals of 2025.
+
+**Day-ahead was above real time on average.** Day-ahead minus FMM, 2025:
+
+| Price | Mean | Median | Hours DA above |
+|---|---:|---:|---:|
+| System energy (MCE) | +$0.77 | +$1.65 | 59% |
+| PG&E load point | +$1.51 | +$2.40 | 63% |
+| SCE load point | +$1.55 | +$2.19 | 63% |
+| SDG&E load point | +$1.52 | +$2.69 | 63% |
+
+The premium is in the evening and night (+$1.50 to +$3.60 in the system energy price,
+hours 17–07 Pacific) and reverses at midday (−$2.10 to −$2.80, hours 9–13). That is the
+same evening-and-night window in which the counterfactual finds virtual bids lowering
+the day-ahead price most. Yesterday's same-hour spread forecasts today's weakly
+(correlation 0.26). Trading on its sign would have earned about $2/MWh and been right in
+60–62% of hours, before CAISO's fees and cost allocations to virtual awards, which are
+not included. A spread that persistent and that predictable means the markets did not
+fully converge.
+
+The 15-minute price that virtual bids settle against also runs slightly **below** the
+5-minute price that load's real-time imbalance settles against: by $0.10 to $0.63/MWh on
+average across the seven nodes, and in 53–57% of hours. That second gap is paid by load
+in real time and is not seen by virtual bidders.
+
+**Cleared virtual volume.** CAISO's published awards average 5,938 MW of virtual supply
+and 5,101 MW of virtual demand per hour, so virtuals were **net sellers of 838 MW**. The
+engine, clearing at the realised price, has them as net sellers of 1,105 MW (hourly
+correlation 0.98 on supply, 0.99 on demand). This is an independent check on the derate
+finding: the original treatment, which turned virtuals into net buyers, was wrong about
+the direction. The per-node awards sum exactly to the ISO-wide net in every hour, and
+show about 2,180 MW per hour of cleared virtual supply and demand cancelling at the same
+node (11,039 MW gross cleared against 8,856 MW of net node positions).
+
+**Virtual bidders' profit, energy component: about +$21 million** in 2025, or $0.22 per
+MWh cleared; profitable in 62% of hours. Almost all of it is on the demand side
+(+$20.5 million against +$0.8 million for supply): virtual demand earns in the midday
+hours when real time runs above day-ahead. Virtual supply earned almost nothing on
+energy despite day-ahead averaging above real time, so whatever virtual supply earns is
+in the congestion and loss components, which need FMM prices at every cleared node and
+are not here. For scale, day-ahead energy purchases by load were about $7.9 billion
+(published load times system energy price).
+
+**More net virtual supply goes with more residual commitment.** RUC averaged 1,027 MW
+per hour. Across quintiles of net cleared virtual supply it rises from 504 MW (net
+virtual demand of 1,047 MW) to 1,675 MW (net virtual supply of 2,395 MW). Within the
+same month and hour of day, holding load and offered supply fixed, each MW of net
+virtual supply goes with about 0.31 MW more RUC (partial correlation 0.47). That is
+the pattern the "harm" argument predicts: virtual supply displaces physical commitment
+in the day-ahead market, and the ISO commits it back afterwards, at a cost recovered
+through uplift. It is an association, not a causal estimate, and the uplift it would
+cost is not measured. Exceptional dispatch shows no such relationship (correlation
+−0.02).
+
+**Flagged: offsetting positions.** 87 of 164 pseudonymous virtual bidders at some point
+bid both sides at the same node in the same hour. One, `V172906`, does it in 58% of its
+node-hours and in 7,954 of the 8,760 hours of the year, and in 98% of those cases its
+supply offer is priced at or below its demand bid. Both legs then clear at any price in
+between, leaving no net position at that node, and the position becomes one-sided only
+if the price moves outside that range. It averages 339 MW per hour of such crossed
+volume. That has an innocent reading, a price-contingent position built from two bids,
+but it also inflates cleared virtual volume on both sides without changing the net,
+and it is invisible in CAISO's per-node awards, which are published net. The same
+bidder is the most influential virtual bidder in the leave-one-out tables below. It is flagged
+here, not explained. Cleared awards carry no bidder identity, so per-bidder profit
+cannot be computed from public data.
+
 ## Results
 
 The split is chronological, because adjacent hours are highly correlated and a random
@@ -331,6 +411,12 @@ ingest step expects.
 | `lmp` | OASIS `PRC_LMP`, DAM, all nodes | 365 | `2025-DAM-LMP-full.parquet` | ~590M rows, 8,760 hours, ~2.4 GB |
 | `slrs` | OASIS `ENE_SLRS`, DAM, all TAC zones | 12 | `caiso-ene-slrs-data/…/2025-MM/*.csv` | 166,536 rows, 8,760 hours |
 | `nodes` | Node list behind CAISO's public price map | 1 | `node_locations.csv` | ~14,900 nodes with coordinates |
+| `rt_fmm` | OASIS `PRC_RTPD_LMP`, RTPD, 3 hubs + 4 DLAPs | 12 | `rt_fmm_prices_2025.parquet` | 1,226,400 rows, 365 trade days |
+| `rt_rtd` | OASIS `PRC_INTVL_LMP`, RTM, 3 hubs + 4 DLAPs | 365 | `rt_rtd_prices_2025.parquet` | 3,679,200 rows, 365 trade days |
+| `cb_awards` | OASIS `ENE_CB_AWARDS` (ISO-wide cleared virtual supply and demand) | 12 | `cb_awards_2025.parquet` | 17,520 rows, 365 trade days |
+| `cb_clr` | OASIS `ENE_CB_CLR_AWARDS` (net cleared virtual MW per node) | 365 | `cb_clr_awards_2025.parquet` | 13,906,396 rows, 365 trade days; one day per request |
+| `ruc` | OASIS `ENE_SLRS`, RUC | 12 | `ruc_schedules_2025.parquet` | 78,936 rows, 365 trade days |
+| `exc_disp` | OASIS `ENE_DISP` (exceptional dispatch) | 12 | `exceptional_dispatch_2025.parquet` | 10,724 rows; 324 trade days, the rest had none |
 
 Things worth knowing before starting:
 
@@ -397,7 +483,9 @@ price less often but are worth two to six times as much when withdrawn. **Price
 formation lives closer to *marginal*; market power lives closer to *pivotal*.**
 
 The most influential virtual bidder by total absolute impact is `V172906` (26th of 519
-bidders; pivotal in 7,704 hours, mean absolute impact $0.77).
+bidders; pivotal in 7,704 hours, mean absolute impact $0.77). It is the same bidder
+flagged under "Toward total cost to load" for placing crossing buy and sell bids at the
+same node in most hours.
 
 > Keying matters here. Virtual bids carry no resource id, so a resource-level ranking that
 > keys them by `PSEUDO_SC_ID` compares 164 virtual entities against 3,164 physical ones and

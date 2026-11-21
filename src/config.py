@@ -19,6 +19,13 @@ ENE_SLRS = RAW / "caiso-ene-slrs-data" / "ENE_SLRS_DAM_2025-01-01_2025-12-31"
 # is the hand-supplied file this project originally used, kept as a fallback.
 NODE_GEO_CSV = RAW / "node_locations.csv"
 NODE_GEO_XLS = RAW / "LMPLocations_vs_FullList.xls"
+# Real-time prices and cost components (issue #8).
+RT_FMM = RAW / "rt_fmm_prices_2025.parquet"
+RT_RTD = RAW / "rt_rtd_prices_2025.parquet"
+CB_AWARDS = RAW / "cb_awards_2025.parquet"
+CB_CLR = RAW / "cb_clr_awards_2025.parquet"
+RUC_SLRS = RAW / "ruc_schedules_2025.parquet"
+EXC_DISP = RAW / "exceptional_dispatch_2025.parquet"
 
 for _d in (DERIVED, MODELS):
     _d.mkdir(parents=True, exist_ok=True)
