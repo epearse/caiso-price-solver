@@ -23,9 +23,8 @@ Both are answered by *re-clearing the market*, not by ablating a regression feat
 > four corrections to how bids are read** (see "Data corrections applied") **and the
 > change in what the derate applies to.** The virtual-bid result above and the
 > sections "The availability derate", "What the derate applies to" and "Day-ahead
-> energy cost effect" are current. The accuracy tables, the bidder tables and the
-> site are not: they will be regenerated together once the validation method (#6)
-> is settled, since that changes the models behind them.
+> energy cost effect" are current, and so are the accuracy tables under "Results".
+> The bidder tables and the live site are not yet regenerated.
 
 ## Anonymity
 
@@ -154,37 +153,82 @@ Python and the browser engine and checks that they agree.
 
 ## Results
 
-Chronological split — trained on January–September, tested on October–December. A random
-split would leak, since adjacent hours are highly correlated.
+The split is chronological, because adjacent hours are highly correlated and a random
+split would leak:
 
-### System energy price
+| Months | Role |
+|---|---|
+| January–July | trees are grown |
+| August–September | the number of trees is chosen (early stopping) |
+| October–December | test: touched once, to report accuracy |
 
-| Model | MAE $/MWh | RMSE | R² |
-|---|---:|---:|---:|
-| **Structural (merit-order + derate)** | **2.70** | 3.40 | **0.935** |
-| Structural + ML residual | 2.93 | 3.75 | 0.921 |
-| Pure ML (no engine) | 3.10 | 3.91 | 0.914 |
-| Persistence (yesterday, same hour) | 5.05 | 7.14 | 0.714 |
-| Raw engine, uncalibrated | 14.73 | 15.38 | −0.326 |
+Each model is then refitted on January–September with the tree count fixed. Intertie
+direction labels (see "Imports and exports") are fitted on January–September only for
+this run, so no part of the pipeline sees the test months' outcomes.
 
-The structural model wins outright. Imposing the merit-order mechanism and learning only
-what the engine cannot see beats letting a gradient-boosted model infer the whole price
-relationship from the same inputs — and it is the only variant whose counterfactuals are
-causal within the model.
+Every model is trained twice:
 
-### Nodal prices
+- **Forecast (ex-ante):** bid stack and calendar only. Everything here exists before
+  the market clears.
+- **Backcast (ex-post):** the same plus CAISO's cleared day-ahead schedules (load,
+  generation, imports and exports, system-wide and by zone). Those are results of the
+  market run whose price is the target, so this measures how well the price can be
+  reconstructed afterwards, not predicted.
+
+### System energy price, October–December 2025 (2,208 hours)
+
+| Model | Inputs | MAE $/MWh | RMSE | R² |
+|---|---|---:|---:|---:|
+| **Structural (merit-order + predicted derate)** | forecast | **2.26** | 2.85 | **0.955** |
+| Structural | backcast | 2.18 | 2.75 | 0.958 |
+| Pure ML (no engine) | forecast | 2.54 | 3.24 | 0.941 |
+| Pure ML | backcast | 2.73 | 3.48 | 0.932 |
+| Structural + ML residual | forecast | 2.94 | 3.70 | 0.923 |
+| Structural + ML residual | backcast | 3.07 | 3.84 | 0.917 |
+| **Engine with one constant derate (no model)** | — | **3.07** | 3.89 | 0.915 |
+| Persistence (yesterday, same hour) | — | 5.05 | 7.14 | 0.714 |
+| Raw engine, uncalibrated | — | 9.56 | 10.22 | 0.414 |
+
+What this shows:
+
+- **The engine does most of the work.** With a single number for the derate (0.761,
+  the January–September median) it already reaches R² 0.915. The learned derate takes
+  MAE from $3.07 to $2.26. That is the model's real contribution, and it is modest:
+  the derate model explains only 26% of the variance of the derate itself
+  (R² 0.258, MAE 0.046).
+- **Cleared schedules add little.** The backcast is $0.08 better than the forecast for
+  the structural model and worse for the two ML models. The earlier version of this
+  table used them as inputs throughout without saying so.
+- **The hybrid is unstable.** With direction labels fitted on the full year instead of
+  January–September, its validation stop moves from 46 to 550 trees and its test MAE
+  from $2.94 to $2.35. The structural model's MAE is $2.26 either way.
+- These replace the earlier figures (MAE $2.70, R² 0.935), which chose the number of
+  trees on the test months and were computed on the uncorrected bid stack.
+
+**The with-virtuals clear landing on the published price is not a validation result.**
+For historical counterfactuals the derate is held at its implied value, which is
+defined as the value that makes the stack clear at the published price. The 2&cent;
+median agreement follows from that definition. The validation result is the table
+above: how well the price is recovered at a *predicted* derate.
+
+### Nodal prices, October–December 2025 (220 sampled hours, about 3.66 million node-hours)
 
 | Target | MAE $/MWh | RMSE | R² |
 |---|---:|---:|---:|
-| Full LMP: structural MCE + ML basis | 3.74 | 7.32 | 0.747 |
-| Full LMP: perfect MCE + ML basis *(ceiling)* | 2.08 | 6.54 | 0.797 |
-| Full LMP: structural MCE only, no basis | 4.29 | 8.63 | 0.648 |
-| Basis alone: LightGBM | 2.08 | 6.54 | 0.320 |
-| Basis alone: per-node mean *(baseline)* | 2.57 | 7.02 | 0.222 |
+| Full LMP: structural MCE + ML basis | 3.43 | 7.70 | 0.720 |
+| Full LMP: structural MCE + per-node mean basis | 3.60 | 7.52 | 0.733 |
+| Full LMP: perfect MCE + ML basis *(ceiling)* | 2.23 | 7.23 | 0.752 |
+| Full LMP: structural MCE only, no basis | 3.88 | 8.41 | 0.666 |
+| Basis alone: LightGBM, forecast | 2.23 | 7.23 | 0.168 |
+| Basis alone: LightGBM, backcast | 2.19 | 7.17 | 0.182 |
+| Basis alone: per-node mean *(baseline)* | 2.57 | 7.02 | 0.221 |
 
-Congestion is genuinely hard: MCC is exactly zero 78% of the time and above $20 in only
-1.2% of node-hours. With no network topology in the model, an R² of 0.32 on the basis is
-about what the data supports — but it still beats a per-node fixed effect by a wide margin.
+The basis model now stops at 371 trees on the validation months (it stopped at 15 when
+the test months chose). It has the lower MAE, but the **per-node mean has the lower
+RMSE and the higher R²**: the learned model does better in the typical node-hour and
+worse on the large congestion spikes. Neither captures congestion well. MCC is
+exactly zero 78% of the time and above $20 in only 1.2% of node-hours, and with no
+network topology in the model that is about what the data supports.
 
 ## The app
 
@@ -251,6 +295,9 @@ brew install libomp                     # LightGBM needs OpenMP on macOS
 ./.venv/bin/python src/models/build_features.py
 ./.venv/bin/python src/models/train_system.py
 ./.venv/bin/python src/models/build_nodal.py
+# For the held-out accuracy in "Results", first rebuild the bids with intertie
+# direction fitted on the training months only, then build_features and train:
+#   ./.venv/bin/python src/ingest/build_bids.py --direction-months 1 2 3 4 5 6 7 8 9
 
 # analysis
 ./.venv/bin/python src/analysis/counterfactual.py --what virtual
@@ -444,8 +491,8 @@ unnormalised silently misaligns the tables by eight hours.
   INTERTIE resources, and the fit cannot be repeated on the import side.
 - **δ absorbs everything the engine omits.** It is a real, stable, measurable quantity,
   but it is a summary of several distinct physical effects, not one of them.
-- Load enters as the cleared day-ahead schedule rather than the forecast available before
-  the market ran, which flatters live-forecasting accuracy somewhat.
+- The forecast models use no market outcomes, but the bid stack they see is the one
+  that was submitted. A live forecast would have to predict the bids too.
 
 ## Layout
 

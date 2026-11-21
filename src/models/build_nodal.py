@@ -30,9 +30,14 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from config import DERIVED, MODELS
 from db import connect
 
-TRAIN_MONTHS = list(range(1, 10))
+# Same three-way split as the system models: trees are grown on the fit months, their
+# number is chosen on the validation months, and the test months are touched once.
+FIT_MONTHS = list(range(1, 8))
+VALID_MONTHS = [8, 9]
+TRAIN_MONTHS = FIT_MONTHS + VALID_MONTHS
 TEST_MONTHS = [10, 11, 12]
 N_TRAIN_HOURS = 420
+N_VALID_HOURS = 100
 N_TEST_HOURS = 220
 SEED = 0
 
@@ -120,7 +125,7 @@ if __name__ == "__main__":
     feats = pd.read_parquet(DERIVED / "features_hourly.parquet")
     sys_cols = [c for c in feats.columns if c not in ("opr_dt",)]
 
-    def assemble(panel):
+    def assemble(panel, ns):
         df = (panel
               .merge(ns, on="node_key", how="left")
               .merge(dim[["node_key", "lat", "lon", "name_class"]], on="node_key", how="left")
@@ -131,8 +136,8 @@ if __name__ == "__main__":
         return df
 
     print("sampling panel ...", flush=True)
-    tr = assemble(sample_panel(con, TRAIN_MONTHS, N_TRAIN_HOURS, SEED))
-    te = assemble(sample_panel(con, TEST_MONTHS, N_TEST_HOURS, SEED + 1))
+    tr = assemble(sample_panel(con, TRAIN_MONTHS, N_TRAIN_HOURS, SEED), ns)
+    te = assemble(sample_panel(con, TEST_MONTHS, N_TEST_HOURS, SEED + 1), ns)
     print(f"  train {len(tr):,} node-hours | test {len(te):,}", flush=True)
 
     DROP = {"ts_gmt", "lmp", "mcc", "mcl", "mce", "basis", "actual_mce", "delta", "opr_dt"}
@@ -144,13 +149,37 @@ if __name__ == "__main__":
                   bagging_fraction=0.8, bagging_freq=1, verbose=-1, seed=SEED,
                   num_threads=6)
 
-    print("training basis model ...", flush=True)
-    dtr = lgb.Dataset(tr[cols], tr.basis, categorical_feature=["name_class"])
-    dte = lgb.Dataset(te[cols], te.basis, reference=dtr)
-    m = lgb.train(params, dtr, num_boost_round=1200, valid_sets=[dte],
-                  callbacks=[lgb.early_stopping(60, verbose=False)])
-    m.save_model(str(MODELS / "basis_model.txt"))
-    te["basis_hat"] = m.predict(te[cols])
+    # Choose the number of trees without looking at the test months: fit on
+    # January-July with node statistics from those months only, and stop on a sample
+    # of August-September.
+    print("choosing tree count on validation months ...", flush=True)
+    ns_fit = node_stats(con, FIT_MONTHS)
+    fi = assemble(sample_panel(con, FIT_MONTHS, N_TRAIN_HOURS, SEED + 2), ns_fit)
+    va = assemble(sample_panel(con, VALID_MONTHS, N_VALID_HOURS, SEED + 3), ns_fit)
+    # Two feature sets, as for the system models. ex-ante leaves out the cleared
+    # day-ahead schedules; ex-post includes them and is a backcast. The ex-ante
+    # model is the one saved as basis_model.txt and used by the app.
+    ex_post_only = [c for c in cols if c.startswith(("iso_", "load_", "gen_", "imp_"))]
+    col_sets = {"": [c for c in cols if c not in ex_post_only], "_expost": cols}
+    trees, models = {}, {}
+    for tag, cs in col_sets.items():
+        dfi = lgb.Dataset(fi[cs], fi.basis, categorical_feature=["name_class"])
+        dva = lgb.Dataset(va[cs], va.basis, reference=dfi)
+        probe = lgb.train(params, dfi, num_boost_round=1200, valid_sets=[dva],
+                          callbacks=[lgb.early_stopping(60, verbose=False)])
+        trees[tag or "_exante"] = max(int(probe.best_iteration), 1)
+        print(f"  {tag or '_exante'}: {trees[tag or '_exante']} trees", flush=True)
+        del dfi, dva, probe
+    del fi, va
+
+    print("training basis models ...", flush=True)
+    for tag, cs in col_sets.items():
+        dtr = lgb.Dataset(tr[cs], tr.basis, categorical_feature=["name_class"])
+        models[tag] = lgb.train(params, dtr, num_boost_round=trees[tag or "_exante"])
+        models[tag].save_model(str(MODELS / f"basis_model{tag}.txt"))
+        te[f"basis_hat{tag}"] = models[tag].predict(te[cs])
+        del dtr
+    m, cols = models[""], col_sets[""]
 
     def met(y, yh, label):
         y, yh = np.asarray(y, float), np.asarray(yh, float)
@@ -162,6 +191,7 @@ if __name__ == "__main__":
 
     rows = [
         met(te.basis, te.basis_hat, "basis: LightGBM"),
+        met(te.basis, te.basis_hat_expost, "basis: LightGBM, backcast (uses cleared schedules)"),
         met(te.basis, te.nd_basis_mean, "basis: per-node mean (baseline)"),
         met(te.basis, np.zeros(len(te)), "basis: zero (baseline)"),
     ]
@@ -177,6 +207,9 @@ if __name__ == "__main__":
     res = pd.DataFrame(rows)
     print("\n" + res.to_string(index=False, float_format=lambda x: f"{x:8.3f}"))
     (MODELS / "nodal_metrics.json").write_text(json.dumps(rows, indent=2))
+    (MODELS / "nodal_training.json").write_text(json.dumps(dict(
+        fit_months=FIT_MONTHS, validation_months=VALID_MONTHS, test_months=TEST_MONTHS,
+        trees=trees), indent=2))
     te[["node_key", "ts_gmt", "lmp", "mce", "basis", "basis_hat", "mce_hat"]].to_parquet(
         DERIVED / "nodal_test_preds.parquet", index=False)
 
