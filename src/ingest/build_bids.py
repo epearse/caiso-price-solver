@@ -243,11 +243,11 @@ def make_tables(con: duckdb.DuckDBPyConnection, source: str,
     make_blocks(con)
 
 
-def build(con: duckdb.DuckDBPyConnection) -> dict:
+def build(con: duckdb.DuckDBPyConnection, direction_months=None) -> dict:
     from ingest import intertie_direction
     make_curves(con, f"'{DAM_BIDS}'")
     make_direction(con)
-    report = intertie_direction.infer(con)
+    report = intertie_direction.infer(con, direction_months)
     make_direction(con, "intertie_fit")
     make_blocks(con)
     con.execute(f"""
@@ -267,8 +267,15 @@ def build(con: duckdb.DuckDBPyConnection) -> dict:
 
 
 if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--direction-months", type=int, nargs="+", default=None,
+                    help="fit intertie direction on published exports from these months "
+                         "only (default: all). Use the training months when the output "
+                         "feeds a held-out test of the price models.")
+    args = ap.parse_args()
     con = connect()
-    report = build(con)
+    report = build(con, args.direction_months)
     (DERIVED / "intertie_direction.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))
     n, res, hrs = con.execute(

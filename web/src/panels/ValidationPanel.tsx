@@ -12,6 +12,10 @@ const LABELS: Record<string, string> = {
   A_structural_derate: 'Structural (merit-order + derate)',
   B_pure_ml: 'Pure ML (no engine)',
   C_structural_plus_ml: 'Structural + ML residual',
+  A_structural_derate_expost: 'Structural — backcast (uses cleared schedules)',
+  B_pure_ml_expost: 'Pure ML — backcast (uses cleared schedules)',
+  C_structural_plus_ml_expost: 'Structural + ML residual — backcast (uses cleared schedules)',
+  constant_derate: 'Engine with one constant derate (no model)',
   raw_engine_uncalibrated: 'Raw engine, uncalibrated',
   persistence_24h: 'Persistence (yesterday, same hour)',
 };
@@ -23,7 +27,7 @@ export function ValidationPanel({ meta }: { meta: Meta | null }) {
   if (!meta) return <Card title="Validation"><Spinner label="loading…" /></Card>;
 
   const sys = Object.entries(meta.system_metrics)
-    .filter(([k]) => k !== 'A_delta_fit')
+    .filter(([k]) => !k.startsWith('A_delta_fit'))
     .sort((a, b) => a[1].mae - b[1].mae);
   const best = sys[0][1].mae;
 
@@ -40,7 +44,7 @@ export function ValidationPanel({ meta }: { meta: Meta | null }) {
   return (
     <div className="space-y-5">
       <Card title="System energy price — held-out accuracy"
-        subtitle="Trained on January–September, tested on October–December. The split is chronological: shuffling hours would let the model memorise its neighbours.">
+        subtitle="Trained on January–September (tree count chosen on August–September), tested on October–December. Rows marked backcast use cleared day-ahead schedules, which are results of the market being predicted.">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[640px] text-[12px]">
             <thead>

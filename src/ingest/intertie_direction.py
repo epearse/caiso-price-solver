@@ -94,10 +94,15 @@ def _fit(X: np.ndarray, y: np.ndarray) -> np.ndarray:
     return lsq_linear(X, y, bounds=(lo, hi), max_iter=300).x
 
 
-def infer(con) -> dict:
+def infer(con, months=None) -> dict:
     """Create table `intertie_fit` (res, direction, basis, coef) and return a report.
     Needs `curve`, `ss_hourly` and `intertie_dir` (curve basis) in `con`, and the
-    system and price tables in the derived folder."""
+    system and price tables in the derived folder.
+
+    `months` restricts the fit to published exports from those calendar months. The
+    fit is the one step of the ingest that looks at a market outcome, so a held-out
+    test of the price models has to keep its test months out of it. Wheel pairs are
+    found from bids alone and always use the whole year."""
     for name in ("mce_hourly.parquet", "system_hourly.parquet"):
         if not (DERIVED / name).exists():
             raise FileNotFoundError(
@@ -128,7 +133,9 @@ def infer(con) -> dict:
     unknown_ss = ss[ss.direction.isna()]
     pairs = wheel_pairs(unknown_ss[["res", "ts_gmt", "mw"]])
 
-    target = con.execute(f"select ts_gmt, iso_exp from {system} where iso_exp is not null").df()
+    keep = "" if not months else f" and month(ts_gmt) in ({','.join(str(int(m)) for m in months)})"
+    target = con.execute(
+        f"select ts_gmt, iso_exp from {system} where iso_exp is not null{keep}").df()
     target = target.set_index("ts_gmt").iso_exp
     hours = target.index
 
@@ -186,12 +193,13 @@ def infer(con) -> dict:
     con.execute("create or replace table intertie_fit as select * from _intertie_fit")
     con.unregister("_intertie_fit")
 
-    ss_avg = ss.groupby("res").mw.sum() / len(hours)
+    ss_avg = ss[ss.ts_gmt.isin(hours)].groupby("res").mw.sum() / len(hours)
     weak = (a > WEAK[0]) & (a < WEAK[1])
     is_exp = (truth == "export").to_numpy()
     is_imp = (truth == "import").to_numpy()
     called = (a > 0.5).to_numpy()
     report = {
+        "fit_months": "all" if not months else [int(m) for m in months],
         "hours": int(len(hours)),
         "published_exports_avg_mw": round(float(target.mean()), 1),
         "identified_before_fit_avg_mw": round(float(known.mean()), 1),
