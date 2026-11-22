@@ -9,37 +9,35 @@ day-ahead system energy price. Load pays more than that. Its cost is
 and virtual bidders' net profits come out of the same pot. This script assembles
 the parts that public data supports, and says plainly which parts it does not.
 
-What is measured here
-  1. Day-ahead vs real-time convergence. Spread = day-ahead price minus 15-minute
-     market (FMM) price, for the system energy component and at the four load
-     aggregation points (DLAPs). FMM is what virtual bids settle against.
-  2. Whether the spread is predictable from the day before: yesterday's same-hour
-     spread as the forecast, and a trading rule built on it. CAISO's per-bid fees
-     and cost allocations to virtual awards are not included.
-  3. Cleared virtual volume as CAISO published it (ENE_CB_AWARDS), against what
-     the engine clears at the realised price.
-  4. Virtual bidders' profit, energy component: ISO-wide net cleared virtual MW
-     times (day-ahead MCE minus FMM MCE). LMP = MCE + MCC + MCL at every node and
-     MCE is the same everywhere, so this is the exact energy part of their profit.
-     The congestion and loss parts need FMM prices at every cleared node and are
-     not here.
-  5. Residual unit commitment and exceptional dispatch against net virtual supply:
-     whether hours with more net virtual supply see more commitment outside the
-     market. An association, not a causal estimate.
-  6. Offsetting positions: one pseudonymous bidder on both sides at the same node
-     in the same hour, priced so that both legs clear together.
+What is measured here, from OASIS
+  1. Day-ahead vs real-time convergence: day-ahead minus 15-minute market (FMM)
+     price, system energy component and at the four load aggregation points
+     (DLAPs), by hour and month; and FMM against 5-minute dispatch (RTD).
+  2. Whether the spread is predictable from the day before, and what a trading rule
+     on yesterday's same-hour spread earns before and after the per-MWh market
+     services charge that applies to virtual awards.
+  3. Cleared virtual volume (ENE_CB_AWARDS) against what the engine clears.
+  4. Virtual bidders' profit. Energy component exactly, from the ISO-wide net
+     position and the system energy spread. Congestion and loss components from
+     per-node net awards (ENE_CB_CLR_AWARDS) and day-ahead and FMM prices at every
+     cleared node. While the all-node FMM pull is incomplete the full figure is a
+     sample estimate with its standard error; when it is complete it is exact.
+  5. Residual unit commitment and exceptional dispatch against net virtual supply.
+     An association, not a causal estimate.
+  6. Offsetting positions by one pseudonymous bidder at one node in one hour.
+  7. Day-ahead energy cost to load at load-weighted DLAP prices.
 
-What is not
-  * Uplift (bid cost recovery). OASIS lists zonal and resource-specific uplift
-    reports, but their query names are not in the public interface specification.
-  * Real-time imbalance cost to load. That needs real-time load, which OASIS does
-    not publish as a series; deriving it from generation and interchange is
-    possible but is an inference, and it is left out.
-  * Per-bidder profit. Cleared awards are published net per node with no bidder
-    identity, and cannot be tied to the masked bids.
+What comes from published reports, not OASIS
+  Uplift (bid cost recovery) and real-time energy cost to load. OASIS has no public
+  query for the uplift reports, and its "actual load" series is not comparable to
+  the day-ahead load schedule (it runs 6 GW above it at midday, tracking battery
+  charging), so the real-time imbalance cannot be rebuilt from public series. Both
+  are taken as annual totals from the Department of Market Monitoring's 2025 annual
+  report (`DMM_2025` below) and labelled as such. They are not hourly, so they
+  cannot be re-weighted or re-run in a counterfactual.
 
-So the cost-to-load figure here is **partial**: the day-ahead energy component and
-the virtual bidders' energy-component profit only.
+What is not available at all
+  Per-bidder profit: awards carry no bidder identity.
 """
 from __future__ import annotations
 
@@ -50,13 +48,36 @@ import pandas as pd
 
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from config import CB_AWARDS, CB_CLR, DAM_LMP, DERIVED, EXC_DISP, RT_FMM, RT_RTD, RUC_SLRS
+from config import (CB_AWARDS, CB_CLR, DAM_LMP, DERIVED, EXC_DISP, RT_FMM, RT_FMM_NODES,
+                    RT_LOAD, RT_RTD, RUC_SLRS)
 from db import connect
 
 DLAPS = ("DLAP_PGAE-APND", "DLAP_SCE-APND", "DLAP_SDGE-APND", "DLAP_VEA-APND")
 HUB = "TH_NP15_GEN-APND"   # any node will do for MCE, which is system-wide
 
 TS = "strptime(INTERVALSTARTTIME_GMT, '%Y-%m-%dT%H:%M:%S%z')::timestamp"
+
+# Published annual figures, CAISO Department of Market Monitoring, "2025 Annual
+# Report on Market Issues and Performance" (printed page numbers). CAISO
+# balancing area load only.
+DMM_2025 = dict(
+    source="https://www.caiso.com/documents/2025-annual-report-on-market-issues-and-performance.pdf",
+    # Table 2.6, p.146: wholesale cost to serve load, $/MWh of load.
+    cost_per_mwh=dict(day_ahead_energy=38.50, real_time_energy=1.42, grid_management_charge=0.60,
+                      bid_cost_recovery=0.68, rmr_cpm=0.0, ancillary_and_ruc_reserves=0.50,
+                      total=41.70),
+    total_cost_usd=8.45e9,                     # section 2.7, p.145
+    # Chapter 8, p.214: bid cost recovery, CAISO balancing area, $.
+    bcr_usd=dict(day_ahead=33.7e6, ruc=47.4e6, real_time=55.7e6),
+    # Table 14.1, pp.285-287: net convergence bidding revenue, $.
+    virtual_profit_usd=dict(demand=-12.12e6, supply_before_bcr=92.65e6,
+                            net_before_bcr=80.5e6, bcr_charged=-21.98e6, net_after_bcr=58.55e6),
+)
+# Charges that apply to virtual bids in 2025 (CAISO Grid Management Charge rates,
+# 2025 table; tariff Appendix F schedule 1): market services, per MWh of virtual
+# award; bid segment fee, per bid segment submitted.
+MARKET_SERVICES_PER_MWH = 0.1615
+BID_SEGMENT_FEE = 0.005
 
 
 def hourly_prices(con) -> pd.DataFrame:
@@ -108,6 +129,7 @@ def convergence(p: pd.DataFrame) -> dict:
             corr_with_yesterday=float(np.corrcoef(prior[ok], s.spread[ok])[0, 1]),
             rule_mean_per_mwh=float(pnl.mean()), rule_share_hours_won=float((pnl > 0).mean()),
             rule_annual_per_mw=float(pnl.sum()),
+            rule_mean_after_market_services=float(pnl.mean() - MARKET_SERVICES_PER_MWH),
         )
     return out
 
@@ -291,6 +313,132 @@ def offsetting(con) -> dict:
                 top=per.round(3).to_dict("records"))
 
 
+def virtual_profit_full(con) -> dict:
+    """All three components of virtual bidders' profit, from per-node net awards.
+
+    profit = net MW x (DA LMP - FMM LMP) at each node, split into energy (MCE),
+    congestion (MCC) and loss (MCL). Supply is positive in ENE_CB_CLR_AWARDS. Hours
+    are those the all-node FMM pull has reached. If that is not the whole year the
+    annual figure is the hourly mean times the hours in the year, with the standard
+    error of that mean; the pull order makes the hours a systematic sample."""
+    # The per-hour files are read directly, so a pull still in progress counts.
+    parts = RT_FMM_NODES.parent / "rt_fmm_nodes"
+    if not list(parts.glob("*.parquet")):
+        return dict(available=False)
+    src = f"read_parquet('{parts}/*.parquet')"
+    con.execute(f"""
+        create or replace temp table vp as
+        with aw as (select {TS} as ts_gmt, NODE_ID as node, MW as mw from '{CB_CLR}'),
+             have as (select distinct ts_gmt from {src}),
+             da as (select {TS} as ts_gmt, NODE_ID as node, LMP_TYPE as kind, avg(MW) as da
+                    from '{DAM_LMP}'
+                    where LMP_TYPE in ('LMP', 'MCE', 'MCC', 'MCL')
+                      and {TS} in (select ts_gmt from have)
+                      and NODE_ID in (select distinct NODE_ID from '{CB_CLR}')
+                    group by 1, 2, 3)
+        select aw.ts_gmt, da.kind, sum(aw.mw * (da.da - f.fmm)) as profit,
+               sum(abs(aw.mw)) filter (where f.fmm is not null) as priced_mw,
+               sum(abs(aw.mw)) as award_mw
+        from aw join have using (ts_gmt)
+             join da on da.ts_gmt = aw.ts_gmt and da.node = aw.node
+             left join {src} f on f.ts_gmt = aw.ts_gmt and f.node = aw.node
+                                         and f.kind = da.kind
+        group by 1, 2
+    """)
+    h = con.execute("select * from vp").df().pivot(index="ts_gmt", columns="kind", values="profit")
+    cover = con.execute("""select sum(priced_mw) / sum(award_mw) from vp where kind = 'LMP'""").fetchone()[0]
+    n, year = len(h), 8760
+    out = dict(available=True, hours=int(n), share_of_year=n / year,
+               award_mw_priced_share=float(cover or 0))
+    for k in ("LMP", "MCE", "MCC", "MCL"):
+        x = h[k].dropna()
+        out[k] = dict(annual_usd=float(x.mean() * year),
+                      se_usd=float(x.std(ddof=1) / np.sqrt(len(x)) * year) if n < year else 0.0)
+    out["components_add_up"] = float(abs(out["LMP"]["annual_usd"] - out["MCE"]["annual_usd"]
+                                         - out["MCC"]["annual_usd"] - out["MCL"]["annual_usd"]))
+    return out
+
+
+def day_ahead_cost(con) -> dict:
+    """Day-ahead energy purchases by load: ISO day-ahead load times the DLAP price,
+    each hour's DLAPs weighted by their share of actual load in that hour.
+
+    Actual load is used only for the weights between utility areas; the quantity
+    is the day-ahead load schedule. Checked against the DMM figure."""
+    areas = {"PGE-TAC": "DLAP_PGAE-APND", "SCE-TAC": "DLAP_SCE-APND",
+             "SDGE-TAC": "DLAP_SDGE-APND", "VEA-TAC": "DLAP_VEA-APND"}
+    case = " ".join(f"when '{k}' then '{v}'" for k, v in areas.items())
+    names = ",".join(f"'{k}'" for k in areas)
+    nodes = ",".join(f"'{v}'" for v in areas.values())
+    r = con.execute(f"""
+        with w as (select {TS} as ts_gmt, case TAC_AREA_NAME {case} end as node,
+                          MW / sum(MW) over (partition by {TS}) as wt
+                   from '{RT_LOAD}' where TAC_AREA_NAME in ({names})),
+             p as (select {TS} as ts_gmt, NODE_ID as node, avg(MW) as lmp from '{DAM_LMP}'
+                   where NODE_ID in ({nodes}) and LMP_TYPE = 'LMP' group by 1, 2),
+             m as (select w.ts_gmt, sum(w.wt * p.lmp) as lmp
+                   from w join p on p.ts_gmt = w.ts_gmt and p.node = w.node group by 1)
+        select sum(s.iso_load * m.lmp), sum(s.iso_load), count(*)
+        from m join '{DERIVED}/system_hourly.parquet' s using (ts_gmt)
+    """).fetchone()
+    return dict(usd=float(r[0]), load_mwh=float(r[1]), hours=int(r[2]),
+                per_mwh=float(r[0] / r[1]),
+                dmm_per_mwh=DMM_2025["cost_per_mwh"]["day_ahead_energy"])
+
+
+def fees(con, award_hours: pd.DataFrame) -> dict:
+    """Charges paid by virtual bidders, at 2025 rates."""
+    cleared = float((award_hours["ISO_TOT_SPLY_MW"] + award_hours["ISO_TOT_DMD_MW"]).sum())
+    segments = con.execute(f"select count(*) from '{DERIVED}/virtuals_hourly.parquet'").fetchone()[0]
+    return dict(cleared_virtual_mwh=cleared,
+                market_services_usd=cleared * MARKET_SERVICES_PER_MWH,
+                bid_segments=int(segments), bid_segment_usd=segments * BID_SEGMENT_FEE,
+                bcr_charged_usd=-DMM_2025["virtual_profit_usd"]["bcr_charged"],
+                note="bid segments counted per submitted segment-hour of the masked bids")
+
+
+def total_cost(da: dict, cf_cost: dict | None, virtual_net_usd: float | None = None,
+               load_mwh: float | None = None) -> dict:
+    """Cost to load per MWh, and what virtual bidding is worth to load.
+
+    The published DMM components give the level. The comparison per derate
+    treatment has two parts that can be measured:
+
+      day-ahead effect   the change in day-ahead energy cost from the
+                         counterfactual (#5, #7): negative means virtuals made
+                         day-ahead energy cheaper for load
+      virtual profit     what virtual bidders earned after the bid cost recovery
+                         charged to them. It is funded through the real-time
+                         offsets, which are allocated to measured demand, so load
+                         pays it.
+
+    Held fixed, because nothing public lets them move: real-time energy prices,
+    unit commitment, RUC and its uplift, ancillary services."""
+    c = DMM_2025["cost_per_mwh"]
+    rows = {k: v for k, v in c.items() if k != "total"}
+    out = dict(published_per_mwh=rows, published_total_per_mwh=c["total"],
+               computed_day_ahead_per_mwh=da["per_mwh"])
+    if cf_cost:
+        vp = (virtual_net_usd / load_mwh) if virtual_net_usd is not None and load_mwh else None
+        out["virtual_net_profit_per_mwh_load"] = vp
+        out["by_treatment"] = {}
+        for m, v in cf_cost.items():
+            eff = v["load_weighted_mean"]
+            row = dict(day_ahead_effect=eff,
+                       total_without_virtuals=c["total"] - eff)
+            if vp is not None:
+                row["net_effect_on_load"] = eff + vp
+            out["by_treatment"][m] = row
+        out["holds_fixed"] = ["real-time energy prices", "unit commitment", "RUC and its uplift",
+                              "ancillary services"]
+        # RUC bid cost recovery not charged to virtual supply falls on load. Some of
+        # it is caused by net virtual supply (the RUC requirement is raised to cover
+        # it); the whole of it is an upper bound on that share.
+        ruc_left = DMM_2025["bcr_usd"]["ruc"] + DMM_2025["virtual_profit_usd"]["bcr_charged"]
+        out["ruc_bcr_not_charged_to_virtuals_per_mwh"] = ruc_left / load_mwh if load_mwh else None
+    return out
+
+
 def main() -> None:
     con = connect(threads=4, memory="8GB")
     feats = pd.read_parquet(DERIVED / "features_hourly.parquet")
@@ -303,17 +451,26 @@ def main() -> None:
     out["commitment"] = commitment(con, net, feats)
     out["offsetting"] = offsetting(con)
 
-    # Day-ahead energy cost to load, and the share virtual bidders took back.
-    sysd = con.execute(f"select ts_gmt, iso_load from '{DERIVED}/system_hourly.parquet'").df()
-    mce = con.execute(f"select ts_gmt, mce from '{DERIVED}/mce_hourly.parquet'").df()
-    da = sysd.merge(mce, on="ts_gmt")
-    out["cost_to_load_partial"] = dict(
-        day_ahead_energy_usd=float((da.iso_load * da.mce).sum()),
-        load_twh=float(da.iso_load.sum() / 1e6),
-        virtual_energy_profit_usd=out["virtual_profit"]["energy_profit_usd"],
-        missing=["uplift (bid cost recovery)", "real-time imbalance cost to load",
-                 "congestion and loss components", "virtual bidders' congestion profit"],
+    out["virtual_profit_full"] = virtual_profit_full(con)
+    out["fees"] = fees(con, award_hours)
+    out["day_ahead_cost"] = day_ahead_cost(con)
+    cfp = DERIVED / "cf_virtual_cost.json"
+    vfull = out["virtual_profit_full"]
+    gross = vfull["LMP"]["annual_usd"] if vfull.get("available") else None
+    out["virtual_net"] = dict(
+        before_bcr_usd=gross,
+        before_bcr_se_usd=vfull["LMP"]["se_usd"] if gross is not None else None,
+        after_bcr_usd=None if gross is None else gross - out["fees"]["bcr_charged_usd"],
+        after_bcr_and_fees_usd=None if gross is None else gross - out["fees"]["bcr_charged_usd"]
+            - out["fees"]["market_services_usd"] - out["fees"]["bid_segment_usd"],
+        dmm_before_bcr_usd=DMM_2025["virtual_profit_usd"]["net_before_bcr"],
+        dmm_after_bcr_usd=DMM_2025["virtual_profit_usd"]["net_after_bcr"],
     )
+    out["total_cost"] = total_cost(out["day_ahead_cost"],
+                                   json.loads(cfp.read_text()) if cfp.exists() else None,
+                                   out["virtual_net"]["after_bcr_usd"],
+                                   out["day_ahead_cost"]["load_mwh"])
+    out["dmm_2025"] = DMM_2025
     (DERIVED / "cost_to_load.json").write_text(json.dumps(out, indent=1, default=float))
 
     c = out["convergence"]
@@ -327,7 +484,8 @@ def main() -> None:
     print("\nvirtual profit:", json.dumps(out["virtual_profit"], indent=1, default=float))
     print("\ncommitment:", json.dumps(out["commitment"], indent=1, default=float))
     print("\noffsetting:", json.dumps(out["offsetting"], indent=1, default=float))
-    print("\ncost to load (partial):", json.dumps(out["cost_to_load_partial"], indent=1, default=float))
+    for k in ("virtual_profit_full", "virtual_net", "fees", "day_ahead_cost", "total_cost"):
+        print(f"\n{k}:", json.dumps(out[k], indent=1, default=float))
 
 
 if __name__ == "__main__":

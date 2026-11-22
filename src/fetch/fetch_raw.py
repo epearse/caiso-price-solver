@@ -18,8 +18,10 @@
 | cb_clr   | SingleZip ENE_CB_CLR_AWARDS (v1)      | 1 / day  | cb_clr_awards_2025.parquet      |
 | ruc      | SingleZip ENE_SLRS RUC (v1)           | 1 / month| ruc_schedules_2025.parquet      |
 | exc_disp | SingleZip ENE_DISP (v1)               | 1 / month| exceptional_dispatch_2025.parquet |
+| rt_load  | SingleZip SLD_FCST ACTUAL (v1)        | 1 / month| rt_actual_load_2025.parquet     |
+| rt_fmm_nodes | GroupZip RTPD_LMP_GRP (v3), all nodes | 1 / hour | rt_fmm_virtual_nodes_2025.parquet |
 
-The last six feed the cost-to-load work (issue #8). Uplift (bid cost recovery) is
+The last eight feed the cost-to-load work (issue #8). Uplift (bid cost recovery) is
 not among them: OASIS lists zonal and resource-specific uplift reports, but their
 query names are not in the public interface specification.
 
@@ -44,7 +46,7 @@ from pathlib import Path
 import duckdb
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from config import (CB_AWARDS, CB_CLR, DAM_BIDS, DAM_LMP, ENE_SLRS, EXC_DISP,
+from config import (CB_AWARDS, CB_CLR, DAM_BIDS, DAM_LMP, ENE_SLRS, EXC_DISP, RT_FMM_NODES, RT_LOAD,
                     NODE_GEO_CSV, RAW, RT_FMM, RT_RTD, RUC_SLRS, SHARDS, VIRTUAL_BIDS,
                     YEAR)
 from fetch import oasis
@@ -351,7 +353,99 @@ def exc_disp(a) -> None:
     """)
 
 
+def rt_load(a) -> None:
+    """Actual hourly integrated load by TAC area (SLD_FCST, market_run_id=ACTUAL).
+
+    The report covers every WEIM balancing area as well; the CAISO areas are the
+    ones named *-TAC (PGE-TAC, SCE-TAC, SDGE-TAC, VEA-TAC, MWD-TAC, and the total
+    CA ISO-TAC). All rows are kept; the analysis selects."""
+    _monthly(a, "rt_load", RT_LOAD, dict(queryname="SLD_FCST", market_run_id="ACTUAL",
+                                         version="1"), """
+        INTERVALSTARTTIME_GMT, INTERVALENDTIME_GMT, OPR_DT::date as OPR_DT,
+        OPR_HR::int as OPR_HR, MARKET_RUN_ID, TAC_AREA_NAME, XML_DATA_ITEM,
+        MW::double as MW
+    """)
+
+
+def _hours_interleaved(start: date, end: date) -> list[datetime]:
+    """Every UTC hour of the trade-day range, ordered in eight interleaved passes.
+
+    Pass k holds hours i with i % 8 == ORDER[k]. Any prefix of the list is then a
+    systematic sample spread evenly over the year, so a pull that has only got part
+    of the way already supports an estimate with a known sampling error."""
+    t0 = datetime.strptime(oasis.midnight_stamp(start), "%Y%m%dT%H:%M-0000")
+    t1 = datetime.strptime(oasis.midnight_stamp(end + timedelta(1)), "%Y%m%dT%H:%M-0000")
+    hours = [t0 + timedelta(hours=i) for i in range(int((t1 - t0).total_seconds() // 3600))]
+    order = (0, 4, 2, 6, 1, 5, 3, 7)
+    return [h for k in order for i, h in enumerate(hours) if i % 8 == k]
+
+
+def rt_fmm_nodes(a) -> None:
+    """15-minute market prices at every node that ever cleared a virtual award,
+    hourly mean per node and component (LMP, MCE, MCC, MCL).
+
+    Needed for the congestion and loss parts of virtual bidders' profit. The
+    all-node report (GroupZip RTPD_LMP_GRP) returns one hour per request, about
+    18,300 nodes, so this is ~8,760 requests (~20 hours at the OASIS pace). Each
+    hour is filtered to the virtual nodes and written straight to its own small
+    parquet, so the raw CSVs never accumulate. A virtual award settles each
+    15-minute interval at that interval's price on a quarter of its hourly MW, so
+    the hourly mean price times the hourly award is exact."""
+    out_dir = RAW / "rt_fmm_nodes"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    con = _con()
+    if not CB_CLR.exists():
+        raise SystemExit("run the cb_clr target first: it defines which nodes to keep")
+    con.execute(f"create or replace table keep as select distinct NODE_ID from '{CB_CLR}'")
+    tmp = RAW / ".tmp" / "rt_fmm_nodes"
+    tmp.mkdir(parents=True, exist_ok=True)
+    hours = _hours_interleaved(a.start, a.end)
+    todo = [h for h in hours if not (out_dir / f"{h:%Y%m%dT%H}.parquet").exists()]
+    if not a.no_download:
+        print(f"  {len(todo)} of {len(hours)} hours to fetch", flush=True)
+        for i, h in enumerate(todo, 1):
+            got = oasis.fetch_zip("GroupZip", dict(groupid="RTPD_LMP_GRP", version="3",
+                                                   resultformat="6",
+                                                   startdatetime=f"{h:%Y%m%dT%H}:00-0000"))
+            if not isinstance(got, dict):
+                print(f"  [{i}/{len(todo)}] {h:%Y-%m-%d %H}Z: {got or 'failed'}", flush=True)
+                continue
+            files = []
+            for name, body in got.items():
+                if any(f"_{k}_" in name for k in ("LMP", "MCE", "MCC", "MCL")) and "_MGHG_" not in name:
+                    f = tmp / name
+                    f.write_bytes(body)
+                    files.append(str(f))
+            part = out_dir / f"{h:%Y%m%dT%H}.parquet"
+            con.execute(f"""
+                copy (
+                    select date_trunc('hour', strptime(INTERVALSTARTTIME_GMT,
+                                      '%Y-%m-%dT%H:%M:%S%z')::timestamp) as ts_gmt,
+                           NODE_ID as node, LMP_TYPE as kind, avg(PRC::double) as fmm,
+                           count(*) as intervals
+                    from read_csv({files!r}, all_varchar=true, union_by_name=true)
+                    where NODE_ID in (select NODE_ID from keep)
+                    group by 1, 2, 3
+                ) to '{part}.partial' (format parquet, compression zstd)
+            """)
+            Path(f"{part}.partial").rename(part)
+            for f in files:
+                Path(f).unlink()
+            if i % 50 == 0 or i == len(todo):
+                print(f"  [{i}/{len(todo)}] {h:%Y-%m-%d %H}Z", flush=True)
+    parts = sorted(out_dir.glob("*.parquet"))
+    if not parts:
+        return
+    con.execute(f"copy (select * from read_parquet('{out_dir}/*.parquet')) "
+                f"to '{RT_FMM_NODES}' (format parquet, compression zstd)")
+    n, hrs, nodes = con.execute(f"select count(*), count(distinct ts_gmt), count(distinct node) "
+                                f"from '{RT_FMM_NODES}'").fetchone()
+    print(f"  {RT_FMM_NODES.name}: {n:,} rows | {hrs:,} of {len(hours):,} hours | {nodes:,} nodes")
+    _vintage(RT_FMM_NODES, rows=n, hours=hrs, expected_hours=len(hours), nodes=nodes)
+
+
 TARGETS = dict(bids=bids, virtuals=virtuals, lmp=lmp, slrs=slrs, nodes=nodes,
+               rt_fmm_nodes=rt_fmm_nodes, rt_load=rt_load,
                rt_fmm=rt_fmm, rt_rtd=rt_rtd, cb_awards=cb_awards, cb_clr=cb_clr,
                ruc=ruc, exc_disp=exc_disp)
 

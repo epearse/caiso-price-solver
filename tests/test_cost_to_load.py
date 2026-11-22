@@ -37,3 +37,23 @@ def test_equal_supply_and_demand_net_to_zero_energy_profit():
                       index=hours)
     s, _ = virtual_profit_energy(aw, p)
     assert s["energy_profit_usd"] == pytest.approx(0.0)
+
+
+def test_without_virtuals_total_subtracts_the_day_ahead_effect():
+    from analysis.cost_to_load import DMM_2025, total_cost
+    cf = {"physical_only": {"load_weighted_mean": -3.9}}
+    t = total_cost({"per_mwh": 39.0}, cf, virtual_net_usd=60e6, load_mwh=200e6)
+    row = t["by_treatment"]["physical_only"]
+    # Virtuals lowered the day-ahead price by $3.90, so without them load pays more.
+    assert row["total_without_virtuals"] == pytest.approx(DMM_2025["cost_per_mwh"]["total"] + 3.9)
+    # Load also pays virtual profit: $60M over 200 TWh is $0.30/MWh.
+    assert row["net_effect_on_load"] == pytest.approx(-3.9 + 0.30)
+
+
+def test_published_components_add_up_to_the_published_total():
+    from analysis.cost_to_load import DMM_2025
+    c = DMM_2025["cost_per_mwh"]
+    assert sum(v for k, v in c.items() if k != "total") == pytest.approx(c["total"], abs=0.011)
+    v = DMM_2025["virtual_profit_usd"]
+    assert v["demand"] + v["supply_before_bcr"] == pytest.approx(v["net_before_bcr"], abs=0.1e6)
+    assert v["net_before_bcr"] + v["bcr_charged"] == pytest.approx(v["net_after_bcr"], abs=0.1e6)
