@@ -24,6 +24,8 @@ RT_FMM = RAW / "rt_fmm_prices_2025.parquet"
 RT_RTD = RAW / "rt_rtd_prices_2025.parquet"
 CB_AWARDS = RAW / "cb_awards_2025.parquet"
 CB_CLR = RAW / "cb_clr_awards_2025.parquet"
+RT_FMM_NODES = RAW / "rt_fmm_virtual_nodes_2025.parquet"
+RT_LOAD = RAW / "rt_actual_load_2025.parquet"
 RUC_SLRS = RAW / "ruc_schedules_2025.parquet"
 EXC_DISP = RAW / "exceptional_dispatch_2025.parquet"
 
