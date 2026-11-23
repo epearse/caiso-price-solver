@@ -14,7 +14,7 @@ It exists to answer two questions:
    depending on one modelling assumption that the data cannot settle (see "What the
    derate applies to"). An earlier version of this page reported +$1.42; that sign
    came from errors in how the bids were read and from that same assumption. Net of
-   the profit load pays virtual bidders, load's total cost was $0.05 to $3.62/MWh
+   the profit load pays virtual bidders, load's total cost was $0.04 to $3.61/MWh
    lower with them than without, on a published total of $41.70 (see "Total cost to
    load"), with real-time prices and commitment held fixed.
 2. **Which bidders move prices most?** Each anonymised bidder is removed and the market
@@ -166,9 +166,9 @@ energy, against what load paid virtual bidders:
 
 | Derate treatment | Day-ahead energy effect | Virtual bidders' net profit, paid by load | Net effect on load |
 |---|---:|---:|---:|
-| `physical_only` (default) | −$3.90 | +$0.29 | **−$3.62** |
-| `symmetric` | −$2.67 | +$0.29 | **−$2.39** |
-| `all_supply` (original) | −$0.33 | +$0.29 | **−$0.05** |
+| `physical_only` (default) | −$3.90 | +$0.29 | **−$3.61** |
+| `symmetric` | −$2.67 | +$0.29 | **−$2.38** |
+| `all_supply` (original) | −$0.33 | +$0.29 | **−$0.04** |
 
 Negative means load paid less with virtual bidding than without. Against a published
 total of **$41.70/MWh** (DMM, below), that is a saving of up to 8.7% under the two
@@ -189,9 +189,9 @@ result to a small net cost.
 |---|---|---|
 | Day-ahead energy, per MWh of load | Computed: day-ahead load × DLAP prices weighted by actual area load | $39.15 (DMM: $38.50) |
 | Day-ahead effect of virtual bids | Computed: the counterfactual, load-weighted (see "Day-ahead energy cost effect") | above |
-| Virtual bidders' profit before uplift | Computed: per-node net awards × (day-ahead − FMM) at every cleared node | **$79.8M ± $8.8M** (DMM: $80.5M) |
+| Virtual bidders' profit before uplift | Computed: per-node net awards × (day-ahead − FMM) at every cleared node | **$80.5M** (DMM: $80.5M) |
 | Bid cost recovery charged to virtual bids | Published (DMM, Table 14.1) | $22.0M |
-| Virtual bidders' profit after uplift | Computed minus published | $57.8M (DMM: $58.55M) |
+| Virtual bidders' profit after uplift | Computed minus published | $58.5M (DMM: $58.55M) |
 | Market services charge on virtual awards | Computed: 96.7 TWh cleared × $0.1615/MWh | $15.6M |
 | Bid segment fees | Computed: 39.8M submitted segment-hours × $0.005 | $0.2M |
 | Real-time energy, bid cost recovery, GMC, ancillary services and RUC reserves | Published (DMM, Table 2.6) | $1.42, $0.68, $0.60, $0.50 per MWh |
@@ -202,11 +202,11 @@ no public query for the uplift reports. Its "actual load" series cannot rebuild 
 real-time imbalance either: it runs up to 6.5 GW above the day-ahead load schedule at
 midday, with the shape of battery charging, so the two are not measuring the same thing.
 
-The virtual profit figure is an estimate from 1,102 of the 8,760 hours of 2025, spread
-evenly over the year (the all-node 15-minute pull runs in interleaved passes; see
-`fetch_raw.py rt_fmm_nodes`). Its energy, congestion and loss components are $15.7M,
-$68.5M and −$4.2M: virtual bidders earn mainly on congestion. When the pull completes
-the figure becomes exact.
+The virtual profit figure uses all 8,760 hours of 2025 at all 3,519 nodes that cleared
+a virtual award (`fetch_raw.py rt_fmm_nodes`). It matches DMM's published $80.5M
+to within $0.1M. Its energy, congestion and loss components are $21.3M, $61.6M and
+−$2.4M: virtual bidders earn mainly on congestion. After uplift and both fees, they
+kept about $42.7M.
 
 Data from OASIS (`fetch_raw.py rt_fmm rt_rtd cb_awards cb_clr ruc exc_disp rt_load
 rt_fmm_nodes`): 15-minute (FMM) and 5-minute (RTD) prices at the three trading hubs and
@@ -253,9 +253,8 @@ node (11,039 MW gross cleared against 8,856 MW of net node positions).
 **Virtual bidders' profit, energy component, exactly: +$21.3 million**, from the ISO-wide
 net position and the system energy spread; profitable in 62% of hours. Almost all of
 it is on the demand side (+$20.5 million against +$0.8 million for supply): virtual
-demand earns in the midday hours when real time runs above day-ahead. (The sample
-estimate of the energy component above, $15.7M ± $2.4M, is 2.3 standard errors from
-this exact figure; the full pull will settle it.) Virtual supply's earnings are in
+demand earns in the midday hours when real time runs above day-ahead. (The per-node
+calculation above gives the same $21.3M, an independent check on both.) Virtual supply's earnings are in
 congestion.
 
 **More net virtual supply goes with more residual commitment.** RUC averaged 1,027 MW
